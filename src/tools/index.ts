@@ -18,13 +18,29 @@ export type AmySession = {
   facilityId: number;
   lang: "en" | "es";
   caps: SessionCaps;
-  /** School forward_to — set from setup custom params / facts; never from model. */
+  /** School forward_to — set from setup custom params / facts; never from model. Informational only:
+   *  the actual Dial target is chosen by Oracle amy-done from phone_line.forward_to. */
   forwardTo: string | null;
-  /** After-hours: no live transfer; use fixed C22 safety scripts. */
+  /** After-hours: no model-initiated live transfer; use fixed C22 safety scripts. (DTMF 1 still dials once.) */
   afterHours: boolean;
+  /** Serializes Edge writes that read-modify-write phone_call.enroll_answers (answers + cost). */
+  writeChain?: Promise<unknown>;
 };
 
-export const TOOL_DEFS: ToolDef[] = [
+/** Phase 4: tour booking stays OFF on the test line (IVR parity: director books from the CRM card). */
+export function bookTourEnabled(): boolean {
+  return (process.env.AMY_BOOK_TOUR_ENABLED || "").trim() === "1";
+}
+
+/** Run an Edge write after any earlier write for this call finished (no lost JSON merges). */
+export function serialWrite<T>(session: AmySession, fn: () => Promise<T>): Promise<T> {
+  const prev = session.writeChain || Promise.resolve();
+  const next = prev.catch(() => undefined).then(fn);
+  session.writeChain = next.catch(() => undefined);
+  return next;
+}
+
+const ALL_TOOL_DEFS: ToolDef[] = [
   {
     type: "function",
     function: {
@@ -50,7 +66,8 @@ export const TOOL_DEFS: ToolDef[] = [
     function: {
       name: "upsert_own_lead",
       description:
-        "Create or append THIS caller's lead from fields collected on this call only. Never overwrite existing CRM fields.",
+        "Save what THIS caller said on THIS call (enrollment answers). Call as soon as you learn any field and again when you learn more; " +
+        "only include fields the caller actually said. The CRM card and director email are built from these after the call.",
       parameters: {
         type: "object",
         properties: {
@@ -59,9 +76,17 @@ export const TOOL_DEFS: ToolDef[] = [
           child_age_or_dob: { type: "string" },
           email: { type: "string" },
           start_date: { type: "string" },
-          schedule: { type: "string" },
+          schedule: { type: "string", description: "full-time | part-time | before and after school | after-school only, in caller's words" },
           subsidy: { type: "string" },
           source: { type: "string" },
+          callback_preference: {
+            type: "string",
+            description: "Caller's answer to: is the number you're calling from the best callback number? (e.g. 'yes' or what they said)",
+          },
+          tour_interest: {
+            type: "string",
+            description: "Caller's answer about a tour: 'yes' plus preferred days/times, or 'not yet'.",
+          },
           notes: { type: "string" },
         },
         additionalProperties: false,
@@ -89,7 +114,7 @@ export const TOOL_DEFS: ToolDef[] = [
     type: "function",
     function: {
       name: "transfer_to_school_line",
-      description: "Transfer caller to this center's configured school line. No number argument. In-hours only.",
+      description: "Warm-transfer caller to this center's school line (number chosen server-side). No number argument. In-hours only.",
       parameters: { type: "object", properties: { reason: { type: "string" } }, additionalProperties: false },
     },
   },
@@ -149,6 +174,14 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
 ];
+
+/** Tools offered to the model. Tour slot/booking tools only when AMY_BOOK_TOUR_ENABLED=1 (default off). */
+export function toolDefs(): ToolDef[] {
+  if (bookTourEnabled()) return ALL_TOOL_DEFS;
+  return ALL_TOOL_DEFS.filter((t) => t.function.name !== "book_tour" && t.function.name !== "read_open_slots");
+}
+/** @deprecated use toolDefs() — kept for back-compat imports. */
+export const TOOL_DEFS: ToolDef[] = ALL_TOOL_DEFS;
 
 export type ToolResult = {
   ok: boolean;
@@ -218,6 +251,7 @@ export async function runTool(
       return { ok: true, data: r.data };
     }
     case "read_open_slots": {
+      if (!bookTourEnabled()) return { ok: false, error: "tour_booking_off_collect_preferred_times" };
       const r = await callEdge("amy-slots-read", {
         facility_id,
         call_sid,
@@ -237,15 +271,22 @@ export async function runTool(
         "schedule",
         "subsidy",
         "source",
+        "callback_preference",
+        "tour_interest",
         "notes",
       ]) {
-        if (typeof args[k] === "string") payload[k] = redactSensitive(String(args[k])).slice(0, 500);
+        if (typeof args[k] === "string" && String(args[k]).trim()) {
+          payload[k] = redactSensitive(String(args[k])).slice(0, 400);
+        }
       }
-      const r = await callEdge("amy-lead-upsert", payload);
+      // Edge merges into phone_call.enroll_answers (IVR-parity keys). Lead create/link + director email
+      // happen in Oracle's status callback (linkCallToLead / maybeSendPhoneDirectorAlert).
+      const r = await serialWrite(session, () => callEdge("amy-lead-upsert", payload));
       if (!r.ok) return { ok: false, error: r.error };
       return { ok: true, data: r.data };
     }
     case "book_tour": {
+      if (!bookTourEnabled()) return { ok: false, error: "tour_booking_off_collect_preferred_times" };
       const r = await callEdge("amy-tour-book", {
         facility_id,
         call_sid,
@@ -260,21 +301,21 @@ export async function runTool(
       if (session.afterHours) {
         return { ok: false, error: "after_hours_no_transfer" };
       }
-      if (!session.forwardTo) return { ok: false, error: "no_forward_to" };
+      // Target is chosen by Oracle amy-done from phone_line.forward_to (fallback +19722856683); never the model.
       console.log("[amy-tool] transfer_to_school_line", call_sid, "fac", facility_id);
       return { ok: true, data: { queued: true }, action: "transfer" };
     }
     case "take_message": {
       const message = redactSensitive(String(args.message || "")).slice(0, 500);
       const urgent = Boolean(args.urgent);
-      const r = await callEdge("amy-call-summary", {
+      const r = await serialWrite(session, () => callEdge("amy-call-summary", {
         facility_id,
         call_sid,
         summary: message,
         urgent,
         kind: "message",
         urgent_kind: typeof args.urgent_kind === "string" ? args.urgent_kind : urgent ? "urgent" : undefined,
-      });
+      }));
       if (!r.ok) return { ok: false, error: r.error };
       return { ok: true, data: r.data };
     }

@@ -23,15 +23,25 @@ export type ToolDef = {
   };
 };
 
+/** Token usage for Guardrail 7 cost estimate (0 when provider omits it). */
+export type LlmUsage = { input_tokens: number; output_tokens: number };
+export type LlmResult = {
+  content: string | null;
+  tool_calls: Array<{ id: string; name: string; arguments: string }> | null;
+  raw_id?: string;
+  usage?: LlmUsage;
+  model?: string;
+};
+
+export function llmModel(): string {
+  return process.env.OPENAI_MODEL || "gpt-4o-mini";
+}
+
 export async function chatCompletion(args: {
   messages: ChatMessage[];
   tools?: ToolDef[];
   model?: string;
-}): Promise<{
-  content: string | null;
-  tool_calls: Array<{ id: string; name: string; arguments: string }> | null;
-  raw_id?: string;
-}> {
+}): Promise<LlmResult> {
   if ((process.env.AMY_LLM_MOCK || "").trim() === "1") {
     return mockCompletion(args.messages);
   }
@@ -39,7 +49,7 @@ export async function chatCompletion(args: {
   const key = (process.env.AMY_LLM_API_KEY || "").trim();
   if (!key) throw new Error("AMY_LLM_API_KEY unset");
   const base = (process.env.OPENAI_API_BASE || DEFAULT_BASE).replace(/\/$/, "");
-  const model = args.model || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const model = args.model || llmModel();
   const preferResponses = (process.env.OPENAI_USE_RESPONSES || "1").trim() !== "0";
 
   if (preferResponses) {
@@ -52,21 +62,20 @@ export async function chatCompletion(args: {
   return chatCompletionsApi({ base, key, model, messages: args.messages, tools: args.tools });
 }
 
-function mockCompletion(messages: ChatMessage[]): {
-  content: string | null;
-  tool_calls: Array<{ id: string; name: string; arguments: string }> | null;
-} {
+function mockCompletion(messages: ChatMessage[]): LlmResult {
   const last = [...messages].reverse().find((m) => m.role === "user");
   const text = (last?.content || "").toLowerCase();
   if (text.includes("person") || text.includes("human") || text.includes("director")) {
     return {
       content: null,
       tool_calls: [{ id: "mock_xfer", name: "transfer_to_school_line", arguments: '{"reason":"caller_request"}' }],
+      usage: { input_tokens: 0, output_tokens: 0 },
     };
   }
   return {
     content: "Thanks for calling. I can help with a tour or answer questions from our fact sheet. What would you like to know?",
     tool_calls: null,
+    usage: { input_tokens: 0, output_tokens: 0 },
   };
 }
 
@@ -76,22 +85,25 @@ async function responsesApi(args: {
   model: string;
   messages: ChatMessage[];
   tools?: ToolDef[];
-}): Promise<{
-  content: string | null;
-  tool_calls: Array<{ id: string; name: string; arguments: string }> | null;
-  raw_id?: string;
-}> {
+}): Promise<LlmResult> {
   // Map chat-style messages into Responses "input" items (simplified).
-  const input = args.messages.map((m) => {
+  // Assistant tool calls must be replayed as function_call items so the following
+  // function_call_output items resolve (otherwise Responses 400s and we fall back to chat every round).
+  const input: Array<Record<string, unknown>> = [];
+  for (const m of args.messages) {
     if (m.role === "tool") {
-      return {
-        type: "function_call_output",
-        call_id: m.tool_call_id,
-        output: m.content,
-      };
+      input.push({ type: "function_call_output", call_id: m.tool_call_id, output: m.content });
+      continue;
     }
-    return { role: m.role, content: m.content };
-  });
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      if (m.content) input.push({ role: "assistant", content: m.content });
+      for (const tc of m.tool_calls) {
+        input.push({ type: "function_call", call_id: tc.id, name: tc.function.name, arguments: tc.function.arguments });
+      }
+      continue;
+    }
+    input.push({ role: m.role, content: m.content });
+  }
   const body: Record<string, unknown> = {
     model: args.model,
     input,
@@ -125,6 +137,7 @@ async function responsesApi(args: {
       call_id?: string;
     }>;
     output_text?: string;
+    usage?: { input_tokens?: number; output_tokens?: number };
   };
   const tool_calls: Array<{ id: string; name: string; arguments: string }> = [];
   let content: string | null = json.output_text || null;
@@ -141,7 +154,13 @@ async function responsesApi(args: {
       if (texts.length) content = texts.join("");
     }
   }
-  return { content, tool_calls: tool_calls.length ? tool_calls : null, raw_id: json.id };
+  return {
+    content,
+    tool_calls: tool_calls.length ? tool_calls : null,
+    raw_id: json.id,
+    usage: { input_tokens: Number(json.usage?.input_tokens || 0), output_tokens: Number(json.usage?.output_tokens || 0) },
+    model: args.model,
+  };
 }
 
 async function chatCompletionsApi(args: {
@@ -150,11 +169,7 @@ async function chatCompletionsApi(args: {
   model: string;
   messages: ChatMessage[];
   tools?: ToolDef[];
-}): Promise<{
-  content: string | null;
-  tool_calls: Array<{ id: string; name: string; arguments: string }> | null;
-  raw_id?: string;
-}> {
+}): Promise<LlmResult> {
   const body: Record<string, unknown> = {
     model: args.model,
     messages: args.messages,
@@ -182,6 +197,7 @@ async function chatCompletionsApi(args: {
         tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
       };
     }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   const msg = json.choices?.[0]?.message;
   const tool_calls =
@@ -190,7 +206,13 @@ async function chatCompletionsApi(args: {
       name: t.function.name,
       arguments: t.function.arguments,
     })) || null;
-  return { content: msg?.content ?? null, tool_calls, raw_id: json.id };
+  return {
+    content: msg?.content ?? null,
+    tool_calls,
+    raw_id: json.id,
+    usage: { input_tokens: Number(json.usage?.prompt_tokens || 0), output_tokens: Number(json.usage?.completion_tokens || 0) },
+    model: args.model,
+  };
 }
 
 /** Redact SSN / Luhn card patterns before any CCO write or log (C17). */

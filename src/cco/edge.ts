@@ -24,18 +24,34 @@ export async function callEdge<T = unknown>(
   const base = edgeBase();
   const tok = token();
   if (!base || !tok) return { ok: false, error: "edge_unconfigured" };
-  const res = await fetch(`${base}/${name}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${tok}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  // 8s cap so a slow/cold Edge never stalls the live call; network errors fail closed (no throw).
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  let res: Response;
+  try {
+    res = await fetch(`${base}/${name}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tok}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch {
+    console.log("[amy-edge]", name, "network_or_timeout");
+    return { ok: false, error: "edge_network" };
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     console.log("[amy-edge]", name, res.status);
     return { ok: false, error: `edge_${res.status}` };
   }
-  const data = (await res.json()) as T;
-  return { ok: true, data };
+  try {
+    const data = (await res.json()) as T;
+    return { ok: true, data };
+  } catch {
+    return { ok: false, error: "edge_bad_json" };
+  }
 }

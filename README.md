@@ -2,7 +2,14 @@
 
 Twilio ConversationRelay WebSocket service for Handprints "Amy".
 
-**Status:** slice-2 bodies + durable C14 consume wired. **NOT deployed.** `AMY_ENABLED` must stay `0` until Security CLOSED PASS on C13–C24 + S1–S18.
+**Status (2026-10-05):** deployed DARK on Render `srv-db209srtqb8s73bjdp10` (`AMY_ENABLED=0`, healthz `amy:"off"`).
+Phase 4 TEST-LINE guardrails in code (see `src/config/guardrails.ts`, `npm test` → phase4 suite).
+Flip runbook: `/workspace/phone/AMY_PHASE4_TEST_LINE_FLIP_RUNBOOK_2026-10-05.md`. `AMY_ENABLED` must stay `0` until Security CLOSED PASS.
+
+- Test line only: setup `to` must be `+14696891960`, facility 2 (hard-coded; env cannot widen).
+- Tuition: bundled `config/fact_sheets/mesquite.json` only, verified against the greened list; output filter on every model reply.
+- Press 1 at any point → `end` with `handoffData` **string** `{"reason":"transfer"}` → Oracle amy-done Dials the school line.
+- Cost estimate per call → Edge `amy-call-summary` `kind=cost_meta` → `phone_call.enroll_answers._amy_cost`.
 
 - No service-role Supabase key here (C15).
 - No PII in logs (CallSid + facility_id only) (C6).

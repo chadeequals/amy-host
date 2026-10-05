@@ -7,12 +7,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GREENED_WEEKLY_RATES } from "../config/guardrails.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const MESQUITE_FACILITY_ID = 2;
 
-const CANONICAL = "/workspace/cco-integration/phone/fact_sheets/mesquite.json";
+/**
+ * Guardrail 2 (Phase 4, 2026-10-05): ONLY the bundled copy of the existing mesquite facts file
+ * (byte-identical to /workspace/cco-integration/phone/fact_sheets/mesquite.json at commit time).
+ * No env override, no DB, no billing_rate_cards.
+ */
 const BUNDLED = join(__dirname, "../../config/fact_sheets/mesquite.json");
 
 type Room = {
@@ -59,21 +64,39 @@ export type LockedQuoteSheet = {
   spoken_rate_lines: string[];
   blank_hand_off: string[];
   billing_rate_cards: false;
+  rates_verified_against_greened_list: boolean;
 };
 
 function sheetPath(): string | null {
-  const fromEnv = (process.env.AMY_FACT_SHEET_MESQUITE || "").trim();
-  const candidates = [fromEnv, CANONICAL, BUNDLED].filter(Boolean);
-  return candidates.find((p) => existsSync(p)) || null;
+  return existsSync(BUNDLED) ? BUNDLED : null;
 }
 
-function delimitRooms(rooms: Room[]): string[] {
+/**
+ * True only when the sheet's quotable (non-null full_time_weekly_usd) rooms are EXACTLY the greened list
+ * (same room names, same amounts, nothing extra) and no other price field is populated.
+ */
+export function sheetMatchesGreenedList(rooms: Room[]): boolean {
+  const quotable = rooms.filter((r) => r.full_time_weekly_usd != null);
+  if (quotable.length !== GREENED_WEEKLY_RATES.length) return false;
+  for (const g of GREENED_WEEKLY_RATES) {
+    const hit = quotable.find((r) => r.room_name === g.room);
+    if (!hit || hit.full_time_weekly_usd !== g.usd) return false;
+  }
+  for (const r of rooms as Array<Record<string, unknown>>) {
+    for (const k of ["part_time_weekly_usd", "part_time_mwf_weekly_usd", "part_time_tth_weekly_usd", "drop_in_daily_usd"]) {
+      if (r[k] != null) return false;
+    }
+  }
+  return true;
+}
+
+function delimitRooms(rooms: Room[], ratesOk: boolean): string[] {
   const lines: string[] = [];
   for (const r of rooms) {
     const bits = [`room=${r.room_name}`];
     if (r.age_min_months != null) bits.push(`age_min_mo=${r.age_min_months}`);
     if (r.age_max_months != null) bits.push(`age_max_mo=${r.age_max_months}`);
-    if (r.full_time_weekly_usd != null) bits.push(`ft_weekly=${r.full_time_weekly_usd}`);
+    if (ratesOk && r.full_time_weekly_usd != null) bits.push(`ft_weekly=${r.full_time_weekly_usd}`);
     else bits.push("ft_weekly=BLANK_hand_off_director");
     if (r.nearly_full === true) bits.push("nearly_full=true");
     lines.push(bits.join("; "));
@@ -113,11 +136,18 @@ export function quoteSheetForFacility(facilityId: number): LockedQuoteSheet | nu
     .join("\n");
 
   const rooms = facts.rooms || [];
-  const delimited = [header, ...delimitRooms(rooms)].filter(Boolean).join("\n");
-  const spoken_rate_lines = rooms
-    .filter((r) => r.full_time_weekly_usd != null)
-    .map((r) => `${r.room_name}: $${r.full_time_weekly_usd} per week`);
-  const blank_hand_off = rooms.filter((r) => r.full_time_weekly_usd == null).map((r) => String(r.room_name));
+  // Fail closed: if the file drifted from the greened list, quote NO rates (all bands → director).
+  const ratesOk = sheetMatchesGreenedList(rooms);
+  if (!ratesOk) console.log("[amy-facts] mesquite.json != greened list — rates withheld");
+  const delimited = [header, ...delimitRooms(rooms, ratesOk)].filter(Boolean).join("\n");
+  const spoken_rate_lines = ratesOk
+    ? rooms
+        .filter((r) => r.full_time_weekly_usd != null)
+        .map((r) => `${r.room_name}: $${r.full_time_weekly_usd} per week`)
+    : [];
+  const blank_hand_off = rooms
+    .filter((r) => !ratesOk || r.full_time_weekly_usd == null)
+    .map((r) => String(r.room_name));
 
   return {
     source: "mesquite_json",
@@ -127,5 +157,6 @@ export function quoteSheetForFacility(facilityId: number): LockedQuoteSheet | nu
     spoken_rate_lines,
     blank_hand_off,
     billing_rate_cards: false,
+    rates_verified_against_greened_list: ratesOk,
   };
 }

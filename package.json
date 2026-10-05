@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node src/__tests__/unit.mjs",
+    "test": "node src/__tests__/unit.mjs && tsc -p tsconfig.json && node src/__tests__/phase4.mjs",
     "dry-run:enrollment": "node scripts/dry-run-enrollment.mjs"
   },
   "engines": {

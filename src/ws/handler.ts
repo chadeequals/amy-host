@@ -3,22 +3,55 @@
  * Messages: setup / prompt / interrupt / dtmf from Twilio; text / end toward Twilio.
  * No PII in logs — CallSid + facility only.
  * P2-1: setup CallSid must match token claims.
+ *
+ * Phase 4 guardrails (2026-10-05):
+ *  G1  setup.to (or server-set calledNumber param) must be the HP2 TEST line; facility must be 2. Else end.
+ *  G2  every model reply passes guardTuitionReply() before TTS (greened weekly list only).
+ *  G3  DTMF "1" at ANY point → end{handoffData:'{"reason":"transfer"}'} → Oracle amy-done <Dial>s the school line;
+ *      Dial no-answer → Oracle stays on line, collects callback, emails (celias-only on this path).
+ *      handoffData MUST be a JSON string (Twilio rejects objects with 64107).
+ *  G4  escalation phrase from SPOKEN_ESCALATION_TARGET only.
+ *  G7  per-call cost estimate posted once on close (Edge amy-call-summary kind=cost_meta → phone_call.enroll_answers._amy_cost).
  */
 import type { WebSocket } from "ws";
 import type { RelayClaims } from "../auth/token.js";
-import { chatCompletion, type ChatMessage } from "../llm/openai.js";
-import { buildSystemPrompt, CENTER_NAMES } from "../prompt.js";
+import { chatCompletion, llmModel, type ChatMessage } from "../llm/openai.js";
+import { AMY_PROMPT_VERSION, buildSystemPrompt, CENTER_NAMES } from "../prompt.js";
 import { newCaps, sessionExpired } from "../session/caps.js";
-import { TOOL_DEFS, runTool, type AmySession } from "../tools/index.js";
+import { runTool, serialWrite, toolDefs, type AmySession } from "../tools/index.js";
 import { callEdge } from "../cco/edge.js";
 import { quoteSheetForFacility } from "../facts/lockedSheet.js";
+import { guardTuitionReply } from "../safety/tuitionGuard.js";
+import { AMY_TEST_LINE_FACILITY_ID, isAllowedCalledNumber, SPOKEN_ESCALATION_TARGET } from "../config/guardrails.js";
+import { estimateCallCost } from "../cost/estimate.js";
 
 type TwilioInbound =
-  | { type: "setup"; callSid?: string; customParameters?: Record<string, string>; from?: string }
+  | { type: "setup"; callSid?: string; customParameters?: Record<string, string>; from?: string; to?: string }
   | { type: "prompt"; voicePrompt?: string; lang?: string; last?: boolean }
   | { type: "interrupt"; utteranceUntilInterrupt?: string }
   | { type: "dtmf"; digit?: string }
   | { type: "error"; description?: string };
+
+export type UsageTally = { llmCalls: number; inputTokens: number; outputTokens: number };
+
+/** Exact stay-on-line line (G4). */
+export function stayOnLineLine(): string {
+  return (
+    `I'm alerting ${SPOKEN_ESCALATION_TARGET} ` +
+    "If a child is in danger, please hang up and call 9 1 1. " +
+    "May I have your name, your child's name, and a callback number?"
+  );
+}
+
+/** Twilio requires handoffData to be a STRING; JSON-encode structured data. */
+export function endMessage(handoff: Record<string, string>): string {
+  return JSON.stringify({ type: "end", handoffData: JSON.stringify(handoff) });
+}
+
+/** Spoken-form fix for model text: Mesquite → Muhskeet (muh-SKEET), never mess-KEE-tay. */
+export function spokenForm(text: string): string {
+  return text.replace(/\bMesquite\b/g, "Muhskeet");
+}
 
 export function handleAmySocket(
   ws: WebSocket,
@@ -32,24 +65,52 @@ export function handleAmySocket(
     caps: newCaps(),
     forwardTo: null,
     afterHours: false,
+    writeChain: Promise.resolve(),
   };
   const messages: ChatMessage[] = [];
+  const usage: UsageTally = { llmCalls: 0, inputTokens: 0, outputTokens: 0 };
+  const openedAt = Date.now();
   let ended = false;
+  let endReason = "caller_hangup";
+  let setupOk = false;
+  let ratesVerified = false;
+  let costPosted = false;
   void meta;
 
   console.log("[amy-ws] open", claims.callSid, "fac", claims.facilityId);
 
   const sendText = (token: string, last = false) => {
-    if (ws.readyState !== ws.OPEN) return;
+    if (ended || ws.readyState !== ws.OPEN) return;
     ws.send(JSON.stringify({ type: "text", token, last }));
   };
   const sendEnd = (handoffData?: Record<string, string>) => {
     if (ended) return;
     ended = true;
+    endReason = (handoffData && handoffData.reason) || "done";
     if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify({ type: "end", handoffData: handoffData || { reason: "done" } }));
+      ws.send(endMessage(handoffData || { reason: "done" }));
     }
   };
+  const refuse = (reason: string) => {
+    console.log("[amy-ws] refuse", reason, session.callSid);
+    sendEnd({ reason });
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+  };
+  /** G3: hand the call back to Oracle for a warm transfer. Oracle speaks "connecting" and Dials. */
+  const transferNow = (via: string) => {
+    console.log("[amy-ws] transfer", via, session.callSid);
+    sendEnd({ reason: "transfer", via });
+  };
+
+  // G1 (host side): token facility must be the test-line facility.
+  if (claims.facilityId !== AMY_TEST_LINE_FACILITY_ID) {
+    refuse("not_test_line_facility");
+    return;
+  }
 
   const hardStopTimer = setTimeout(() => {
     console.log("[amy-ws] 15m cap", session.callSid);
@@ -71,37 +132,40 @@ export function handleAmySocket(
       return;
     }
     try {
+      // G3: DTMF 1 wins from ANY point (before/after setup, during model turns).
+      if (msg.type === "dtmf") {
+        if ((msg.digit || "").trim() === "1") transferNow("dtmf_1");
+        return;
+      }
+
       if (msg.type === "setup") {
         // P2-1: bind Twilio CallSid to token claims.
         if (msg.callSid && msg.callSid !== claims.callSid) {
-          console.log("[amy-ws] setup callSid mismatch", claims.callSid);
-          sendEnd({ reason: "callsid_mismatch" });
-          try {
-            ws.close();
-          } catch {
-            /* ignore */
-          }
+          refuse("callsid_mismatch");
+          return;
+        }
+        // G1: called number must be the TEST line. Twilio's setup.to is authoritative; the server-set
+        // calledNumber Parameter (Oracle) is the fallback. Any present value must be allowlisted.
+        const to = (msg.to || "").trim();
+        const calledParam = (msg.customParameters?.calledNumber || "").trim();
+        const presented = [to, calledParam].filter(Boolean);
+        if (!presented.length || !presented.every((n) => isAllowedCalledNumber(n))) {
+          refuse("not_test_line");
           return;
         }
         const lang = (msg.customParameters?.lang === "es" ? "es" : "en") as "en" | "es";
         session.lang = lang;
-        // afterHours from TwiML Parameter (server-set). Default false = in-hours path.
         const ah = (msg.customParameters?.afterHours || msg.customParameters?.after_hours || "").toLowerCase();
         session.afterHours = ah === "1" || ah === "true" || ah === "yes";
-        // Do NOT log From. Capture only for tool payloads if needed later (lead uses Edge phone_call).
+        // Do NOT log From.
         const facts = await callEdge<{ delimited?: string; forward_to?: string }>("amy-facts-read", {
           facility_id: session.facilityId,
           call_sid: session.callSid,
         });
-        // CFO lock 2026-10-03: HP2 quotes from mesquite.json only.
-        // Edge amy-facts-read still requires billing_rate_card_id before it will
-        // emit a price — those cards are NOT the charge schedule. Do not use them.
+        // G2 / CFO lock 2026-10-03: HP2 quotes from mesquite.json only (verified against greened list).
         const sheet = quoteSheetForFacility(session.facilityId);
-        const delimited = sheet
-          ? sheet.delimited
-          : facts.ok
-            ? String((facts.data as { delimited?: string }).delimited || "")
-            : "";
+        ratesVerified = !!sheet?.rates_verified_against_greened_list;
+        const delimited = sheet ? sheet.delimited : "";
         if (facts.ok && (facts.data as { forward_to?: string }).forward_to) {
           session.forwardTo = String((facts.data as { forward_to?: string }).forward_to);
         }
@@ -114,65 +178,20 @@ export function handleAmySocket(
             centerName: center,
             lang: session.lang,
             factsDelimited: delimited,
-            forwardLabel: session.forwardTo ? "configured" : "unset",
+            forwardLabel: "configured_server_side",
             afterHours: session.afterHours,
+            ratesVerified,
           }),
         });
-        console.log("[amy-ws] setup", session.callSid, "fac", session.facilityId);
+        setupOk = true;
+        console.log("[amy-ws] setup", session.callSid, "fac", session.facilityId, "rates_ok", ratesVerified);
         return;
       }
 
-      if (msg.type === "interrupt") {
-        return;
-      }
-
-      if (msg.type === "dtmf") {
-        // Press 1 → warm-transfer to school line (urgent / live person). Never bare goodbye.
-        if ((msg.digit || "").trim() === "1") {
-          if (session.afterHours || !session.forwardTo) {
-            sendText(
-              "I'm alerting the center director and our leadership team right now. " +
-                "If a child is in danger, please hang up and call 9 1 1. " +
-                "May I have your name, your child's name, and a callback number?",
-              true,
-            );
-            messages.push({
-              role: "assistant",
-              content:
-                "DTMF 1 after-hours/no-forward: alerting leadership; collecting name/child/callback. Never bare goodbye.",
-            });
-            // Fire urgent take_message via tool path
-            const result = await runTool(session, "take_message", JSON.stringify({
-              message: "DTMF 1 urgent — caller requested live person; collecting callback",
-              urgent: true,
-              urgent_kind: "urgent",
-            }));
-            void result;
-            return;
-          }
-          const result = await runTool(session, "transfer_to_school_line", "{}");
-          if (result.action === "transfer") {
-            sendText("Of course — connecting you with the school now.", true);
-            sendEnd({ reason: "transfer" });
-            return;
-          }
-          sendText(
-            "I'm alerting the center director and our leadership team right now. " +
-              "If a child is in danger, please hang up and call 9 1 1. " +
-              "May I have your name, your child's name, and a callback number?",
-            true,
-          );
-          await runTool(session, "take_message", JSON.stringify({
-            message: "DTMF 1 transfer failed — collecting callback",
-            urgent: true,
-            urgent_kind: "urgent",
-          }));
-          return;
-        }
-        return;
-      }
+      if (msg.type === "interrupt") return;
 
       if (msg.type === "prompt") {
+        if (!setupOk) return; // never talk before G1 passed
         if (sessionExpired(session.caps)) {
           sendText("I've reached my time limit. Goodbye!", true);
           sendEnd({ reason: "session_cap" });
@@ -181,7 +200,7 @@ export function handleAmySocket(
         const uttered = (msg.voicePrompt || "").trim();
         if (!uttered) return;
         messages.push({ role: "user", content: uttered });
-        await replyLoop(session, messages, sendText, sendEnd);
+        await replyLoop(session, messages, usage, ratesVerified, sendText, sendEnd, () => ended);
         return;
       }
 
@@ -198,18 +217,57 @@ export function handleAmySocket(
 
   ws.on("close", () => {
     clearTimeout(hardStopTimer);
-    console.log("[amy-ws] close", session.callSid);
+    console.log("[amy-ws] close", session.callSid, "reason", endReason);
+    if (costPosted || !setupOk) return;
+    costPosted = true;
+    // G7: one cost record per conversational call, after any pending answer writes.
+    const cost = estimateCallCost({
+      promptVersion: AMY_PROMPT_VERSION,
+      model: llmModel(),
+      sessionSeconds: (Date.now() - openedAt) / 1000,
+      llmCalls: usage.llmCalls,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      endReason,
+    });
+    void serialWrite(session, () =>
+      callEdge("amy-call-summary", {
+        facility_id: session.facilityId,
+        call_sid: session.callSid,
+        kind: "cost_meta",
+        summary: "cost_meta",
+        cost,
+      }),
+    ).then((r) => {
+      if (!r.ok) console.log("[amy-ws] cost_meta not stored", session.callSid, r.error);
+    });
   });
 }
 
 async function replyLoop(
   session: AmySession,
   messages: ChatMessage[],
+  usage: UsageTally,
+  ratesVerified: boolean,
   sendText: (t: string, last?: boolean) => void,
   sendEnd: (h?: Record<string, string>) => void,
+  isEnded: () => boolean,
 ): Promise<void> {
+  /** G2: every model-authored line goes through the tuition filter. Fixed safety lines do not. */
+  const sayModel = (raw: string) => {
+    const g = guardTuitionReply(raw, session.lang, ratesVerified);
+    if (g.blocked) console.log("[amy-ws] tuition_guard", session.callSid, g.reason);
+    sendText(spokenForm(g.text), true);
+    return g.text;
+  };
+
   for (let round = 0; round < 4; round++) {
-    const out = await chatCompletion({ messages, tools: TOOL_DEFS });
+    if (isEnded()) return;
+    const out = await chatCompletion({ messages, tools: toolDefs() });
+    usage.llmCalls += 1;
+    usage.inputTokens += out.usage?.input_tokens || 0;
+    usage.outputTokens += out.usage?.output_tokens || 0;
+    if (isEnded()) return; // e.g. caller pressed 1 while the model was thinking
     if (out.tool_calls?.length) {
       messages.push({
         role: "assistant",
@@ -228,10 +286,10 @@ async function replyLoop(
           name: tc.name,
           content: JSON.stringify(result),
         });
+        if (isEnded()) return;
         if (result.action === "transfer") {
-          // P2-5: handoffData reason=transfer → amy-done Dial session forward_to only.
-          sendText("Of course — connecting you with the school now.", true);
-          sendEnd({ reason: "transfer" });
+          // P2-5: handoffData reason=transfer → amy-done Dials phone_line.forward_to only.
+          sendEnd({ reason: "transfer", via: "model" });
           return;
         }
         if (result.action === "safety_speak") {
@@ -242,28 +300,18 @@ async function replyLoop(
           return;
         }
         if (result.action === "end") {
-          // Danger path: prefer fixed spoken over model content.
           if (result.spoken) sendText(result.spoken, true);
-          else if (out.content) sendText(out.content, true);
-          else {
-            // Never bare "Thank you. Goodbye." on safety/urgent ends — soft confirmation only if no spoken line.
-            sendText(
-              result.action === "end" && !result.spoken
-                ? "Thank you for calling Handprints Academy. If a child is in danger, hang up and call 9 1 1."
-                : "Thank you for calling Handprints Academy. Goodbye!",
-              true,
-            );
-          }
+          else if (out.content) sayModel(out.content);
+          else sendText("Thank you for calling Handprints Academy. If a child is ever in danger, hang up and call 9 1 1.", true);
           sendEnd({ reason: result.spoken ? "safety_danger" : "end_call" });
           return;
         }
       }
       continue;
     }
-    const text = (out.content || "Sorry, I didn't catch that.").trim();
-    sendText(text, true);
+    const text = sayModel((out.content || "Sorry, I didn't catch that.").trim());
     messages.push({ role: "assistant", content: text });
     return;
   }
-  sendText("Let me have the director follow up with you. Thank you!", true);
+  sendText("Let me have the center director follow up with you. Thank you!", true);
 }
