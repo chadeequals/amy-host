@@ -1,0 +1,26 @@
+{
+  "_purpose": "Amy HP2 Option-2 mouthpiece TEST attachment only (2026-10-03). Not a live parent Amy path.",
+  "_rules": [
+    "AMY_ENABLED must remain unset or 0",
+    "phone_line.amy_enabled must remain false",
+    "Dry-run uses this file + fact sheet; it cannot place live parent calls or open ConversationRelay",
+    "Do not publish (214) 704-6825 anywhere public (Chad private test phone)"
+  ],
+  "test_lines": [
+    {
+      "e164": "+14696891960",
+      "display": "(469) 689-1960",
+      "facility_id": 2,
+      "center": "HP2 Mesquite",
+      "label": "HP2 Mesquite enrollment",
+      "mode": "test_only",
+      "live_parent_amy": false,
+      "db_phone_line_id": "b2b22c77-62cd-42cf-93ff-e7ad73f833ec",
+      "db_amy_enabled": false,
+      "db_active": true,
+      "db_channel_tag": "tracking_pilot",
+      "proof_test_only": "tryAmyHandOff / amyLiveForLine require AMY_ENABLED=1 AND phone_line.amy_enabled=true. Both are false in prod as of 2026-10-03 SELECT. This config is for local dry-run / Monday practice prep only."
+    }
+  ],
+  "forbidden_public_numbers": ["+12147046825", "(214) 704-6825"]
+}

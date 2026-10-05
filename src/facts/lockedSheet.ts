@@ -1,0 +1,131 @@
+/**
+ * CFO lock 2026-10-03: HP2 enrollment quotes come ONLY from the locked
+ * Mesquite fact sheet (Present Rates). No billing_rate_cards. No DB.
+ * Blank bands stay blank — do not invent five-year-old, summer, drop-in,
+ * part-time, or registration dollar amounts.
+ */
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+export const MESQUITE_FACILITY_ID = 2;
+
+const CANONICAL = "/workspace/cco-integration/phone/fact_sheets/mesquite.json";
+const BUNDLED = join(__dirname, "../../config/fact_sheets/mesquite.json");
+
+type Room = {
+  room_name?: string;
+  age_min_months?: number | null;
+  age_max_months?: number | null;
+  full_time_weekly_usd?: number | null;
+  nearly_full?: boolean;
+};
+
+type Center = {
+  center_name?: string;
+  address?: string;
+  director_first_name?: string;
+  center_hours?: string;
+  meals_line?: string;
+  ages_served?: string;
+};
+
+type Facts = {
+  callback_window?: string | null;
+  accepts_workforce_solutions?: boolean | null;
+  trs_verified?: boolean;
+  trs_level?: number | string | null;
+  value_points?: string[];
+  safety_facts?: string[];
+  tuition_quote_scope?: string | null;
+  registration_fee_usd?: number | null;
+};
+
+type Sheet = {
+  facility_id?: number;
+  center?: Center;
+  facts?: Facts;
+  rooms?: Room[];
+};
+
+export type LockedQuoteSheet = {
+  source: "mesquite_json";
+  path: string;
+  facility_id: number;
+  delimited: string;
+  /** Greened weekly Present Rates only. No invented blanks. */
+  spoken_rate_lines: string[];
+  blank_hand_off: string[];
+  billing_rate_cards: false;
+};
+
+function sheetPath(): string | null {
+  const fromEnv = (process.env.AMY_FACT_SHEET_MESQUITE || "").trim();
+  const candidates = [fromEnv, CANONICAL, BUNDLED].filter(Boolean);
+  return candidates.find((p) => existsSync(p)) || null;
+}
+
+function delimitRooms(rooms: Room[]): string[] {
+  const lines: string[] = [];
+  for (const r of rooms) {
+    const bits = [`room=${r.room_name}`];
+    if (r.age_min_months != null) bits.push(`age_min_mo=${r.age_min_months}`);
+    if (r.age_max_months != null) bits.push(`age_max_mo=${r.age_max_months}`);
+    if (r.full_time_weekly_usd != null) bits.push(`ft_weekly=${r.full_time_weekly_usd}`);
+    else bits.push("ft_weekly=BLANK_hand_off_director");
+    if (r.nearly_full === true) bits.push("nearly_full=true");
+    lines.push(bits.join("; "));
+  }
+  return lines;
+}
+
+/** Facility 2 only. Other centers are not this lock. */
+export function quoteSheetForFacility(facilityId: number): LockedQuoteSheet | null {
+  if (facilityId !== MESQUITE_FACILITY_ID) return null;
+  const path = sheetPath();
+  if (!path) return null;
+  const facts = JSON.parse(readFileSync(path, "utf8")) as Sheet;
+  const center = facts.center || {};
+  const f = facts.facts || {};
+  const header = [
+    center.center_name && `center_name=${center.center_name}`,
+    center.address && `address=${center.address}`,
+    center.director_first_name && `director_first_name=${center.director_first_name}`,
+    center.center_hours && `center_hours=${center.center_hours}`,
+    center.meals_line && `meals_line=${center.meals_line}`,
+    center.ages_served && `ages_served=${center.ages_served}`,
+    f.callback_window && `callback_window=${f.callback_window}`,
+    f.accepts_workforce_solutions != null &&
+      `accepts_workforce_solutions=${f.accepts_workforce_solutions}`,
+    f.trs_verified === true && f.trs_level != null && `trs_level=${f.trs_level}`,
+    Array.isArray(f.value_points) && f.value_points.length
+      ? `value_points=${f.value_points.join(" | ")}`
+      : "",
+    Array.isArray(f.safety_facts) && f.safety_facts.length
+      ? `safety_facts=${f.safety_facts.join(" | ")}`
+      : "",
+    f.tuition_quote_scope && `tuition_quote_scope=${f.tuition_quote_scope}`,
+    f.registration_fee_usd == null && "registration_fee_usd=BLANK_hand_off_director",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const rooms = facts.rooms || [];
+  const delimited = [header, ...delimitRooms(rooms)].filter(Boolean).join("\n");
+  const spoken_rate_lines = rooms
+    .filter((r) => r.full_time_weekly_usd != null)
+    .map((r) => `${r.room_name}: $${r.full_time_weekly_usd} per week`);
+  const blank_hand_off = rooms.filter((r) => r.full_time_weekly_usd == null).map((r) => String(r.room_name));
+
+  return {
+    source: "mesquite_json",
+    path,
+    facility_id: MESQUITE_FACILITY_ID,
+    delimited,
+    spoken_rate_lines,
+    blank_hand_off,
+    billing_rate_cards: false,
+  };
+}

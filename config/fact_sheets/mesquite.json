@@ -1,0 +1,187 @@
+{
+  "_notes": "Locked Present Rates greened Chad via COO-CFO 2026-10-03. Amy may quote ONLY full-time weekly amounts on this sheet (Present Rate column = 7/9/2026 competitor workbook, NOT Corporate Suggested). Before/after: $83 AFTER-SCHOOL ONLY; $106 BEFORE AND AFTER. Five-year-old / summer / drop-in / part-time / registration stay BLANK \u2192 hand off to Brianna (director). Do NOT quote CCA remittance, drop-in, or any rate not listed. Not for ads. Not live until Monday practice passes and Security turns Amy on. Do NOT change billing_rate_cards to match.",
+  "_sources": {
+    "center": "Texas HHSC CCL open data bc5r-88dy (pulled 2026-09-26) + handprintschildcare.com center page (fetched 2026-09-26)",
+    "trs_public_record": "TWC Monthly CCS Data Report, Child Care Facilities 2024 Q2 (data.texas.gov bsvz-ncuc), latest public month 06/2024",
+    "state_license_number": "1159306",
+    "trs_last_public_rating": "3-Star (06/2024)",
+    "phone_note": "Chad confirmed 9/26/2026: front desk is (972) 285-6683 (matches state license and website). Google Business Profile and Google Ads call asset currently show (972) 364-7906.",
+    "trs_note": "Chad confirmed 9/26/2026 that Mesquite is Texas Rising Star 4-Star; public TWC record (06/2024) showed 3-Star.",
+    "tuition": "Dropbox: Chad Elias/Financial/HPA TUITION RATES FOR ALL YEARS/HPA Tuition Rates YR 2025/Tuition Rates effective 8.1.25/HP2 Tuition Rates/HP2.pdf (effective 2025-08-01). Newest sheet found for this center; Forney has a newer 6/1/2026 sheet, so confirm these are still current before live calls."
+  },
+  "facility_id": 2,
+  "center": {
+    "center_name": "Handprints Academy Mesquite",
+    "address": "606 Pioneer Rd, Mesquite, TX 75149",
+    "director_first_name": "Brianna",
+    "center_hours": "Mon-Fri 6:30 AM-6:30 PM",
+    "meals_line": "Meals and snacks are provided",
+    "ages_served": "6 weeks to 12 years (infants through school age)",
+    "front_desk_phone": "(972) 285-6683",
+    "pronunciation_en": "muh-SKEET (never mess-KEE-tay)",
+    "center_name_spoken": "Handprints Academy Muhskeet"
+  },
+  "facts": {
+    "registration_fee_usd": null,
+    "registration_fee_note": "Not greened 2026-10-03. Do not quote registration, supply, drop-in, part-time, summer, or five-year-old rates \u2014 hand off to Brianna.",
+    "callback_window": "within 2 business hours",
+    "safety_facts": [
+      "We are a state-licensed child care center in Texas."
+    ],
+    "curriculum_name": null,
+    "parent_updates": null,
+    "value_points": [
+      "Before- and after-school care with transportation to and from school",
+      "Part-time care available",
+      "Field trips"
+    ],
+    "accepts_workforce_solutions": true,
+    "careers_link": null,
+    "trs_level": 4,
+    "trs_verified": true,
+    "trs_verified_by": "Chad Elias (owner)",
+    "trs_verified_on": "2026-09-26",
+    "tuition_effective_date": "2026-10-03",
+    "tuition_confirmed_current": true,
+    "tuition_quote_scope": "HP2 weekly Present Rates only, greened Chad 2026-10-03. No drop-in, no CCA, no other center. Blank bands \u2192 Brianna (director)."
+  },
+  "rooms": [
+    {
+      "room_name": "Infants",
+      "age_min_months": 0,
+      "age_max_months": 11,
+      "full_time_weekly_usd": 196,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Toddler 12\u201317 months",
+      "age_min_months": 12,
+      "age_max_months": 17,
+      "full_time_weekly_usd": 179,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Toddler 18\u201323 months",
+      "age_min_months": 18,
+      "age_max_months": 23,
+      "full_time_weekly_usd": 176,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Two",
+      "age_min_months": 24,
+      "age_max_months": 35,
+      "full_time_weekly_usd": 167,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "3 years",
+      "age_min_months": 36,
+      "age_max_months": 47,
+      "full_time_weekly_usd": 160,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "4 years",
+      "age_min_months": 48,
+      "age_max_months": 59,
+      "full_time_weekly_usd": 155,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Five-year-old (hand off to Brianna \u2014 rate blank)",
+      "age_min_months": 60,
+      "age_max_months": 71,
+      "full_time_weekly_usd": null,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "not_greened_2026-10-03_hand_off_brianna",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Before/after school \u2014 AFTER-SCHOOL ONLY",
+      "age_min_months": 60,
+      "age_max_months": 144,
+      "full_time_weekly_usd": 83,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Before/after school \u2014 BEFORE AND AFTER",
+      "age_min_months": 60,
+      "age_max_months": 144,
+      "full_time_weekly_usd": 106,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "chad_green_2026-10-03_present_rate_weekly",
+      "nearly_full": false,
+      "milestones": null
+    },
+    {
+      "room_name": "Summer / holiday (hand off to Brianna \u2014 rate blank)",
+      "age_min_months": 60,
+      "age_max_months": 144,
+      "full_time_weekly_usd": null,
+      "part_time_weekly_usd": null,
+      "part_time_mwf_weekly_usd": null,
+      "part_time_tth_weekly_usd": null,
+      "drop_in_daily_usd": null,
+      "rate_source": "not_greened_2026-10-03_hand_off_brianna",
+      "nearly_full": false,
+      "milestones": null
+    }
+  ],
+  "_lock": {
+    "greened_by": "Chad Elias via COO-CFO",
+    "greened_on": "2026-10-03",
+    "source_column": "Present Rate (competitor workbook 7/9/2026)",
+    "not_source_column": "Corporate Suggested",
+    "billing_writes": "FORBIDDEN \u2014 CFO lock: compare only; mismatch \u2192 stop"
+  }
+}

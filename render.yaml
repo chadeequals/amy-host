@@ -1,0 +1,20 @@
+# DOCUMENT ONLY — do not apply / create without Chad.
+# Target: Render Pro workspace, Virginia (US East), Starter or larger web service.
+# Protected environment; Admin-only secret view; 2FA on all members (C13).
+services:
+  - type: web
+    name: amy-host
+    runtime: node
+    region: virginia
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: AMY_ENABLED
+        value: "0"
+      - key: NODE_ENV
+        value: production
+      # Secrets (set in dashboard — never commit values):
+      # AMY_LLM_API_KEY, AMY_HOST_API_TOKEN, AMY_RELAY_TOKEN_SECRET,
+      # TWILIO_AUTH_TOKEN, CCO_EDGE_BASE_URL

@@ -1,0 +1,27 @@
+{
+  "name": "amy-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Handprints Amy \u2014 Twilio ConversationRelay WebSocket host (Render Virginia). Kill switch stays OFF until Security CLOSED PASS.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node src/__tests__/unit.mjs",
+    "dry-run:enrollment": "node scripts/dry-run-enrollment.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}
