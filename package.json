@@ -13,7 +13,7 @@
     "dry-run:enrollment": "node scripts/dry-run-enrollment.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   },
   "dependencies": {
     "ws": "^8.18.0"
