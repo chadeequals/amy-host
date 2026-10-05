@@ -36,7 +36,7 @@ export const SPOKEN_ESCALATION_TARGET = "the center director and our leadership 
 export const SCHOOL_LINE_E164 = "+19722856683";
 
 /** Guardrail 7: menu/prompt version stamped on every cost record. Bump on any prompt/greeting change. */
-export const AMY_PROMPT_VERSION = "amy-cr-hp2-test-2026-10-05.p4";
+export const AMY_PROMPT_VERSION = "amy-cr-hp2-test-2026-10-05.p5";
 
 /** Guardrail 8: never creates/links a lead (enforced in Oracle store.ts linkCallToLead). Listed for tests. */
 export const LEAD_EXCLUDED_CALLERS_LAST10: ReadonlySet<string> = new Set(["2147046825"]);

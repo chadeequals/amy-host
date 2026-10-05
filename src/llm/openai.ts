@@ -63,6 +63,12 @@ export async function chatCompletion(args: {
 }
 
 function mockCompletion(messages: ChatMessage[]): LlmResult {
+  // Test-only script hook (reachable only with AMY_LLM_MOCK=1): lets scenario tests drive tool calls.
+  const hook = (globalThis as { __amyMockLlm?: (m: ChatMessage[]) => LlmResult | null }).__amyMockLlm;
+  if (typeof hook === "function") {
+    const r = hook(messages);
+    if (r) return r;
+  }
   const last = [...messages].reverse().find((m) => m.role === "user");
   const text = (last?.content || "").toLowerCase();
   if (text.includes("person") || text.includes("human") || text.includes("director")) {
