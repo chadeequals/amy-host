@@ -8,6 +8,7 @@
 import { EventEmitter } from "node:events";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 process.env.AMY_LLM_MOCK = "1";
 process.env.CCO_EDGE_BASE_URL = "https://edge.fake/functions/v1";
@@ -452,6 +453,184 @@ check("D5 EN 911 line unchanged", sc.inHoursDangerLine.en === "This sounds like 
 check("D5 EN alert-failed in-hours unchanged", sc.alertFailedLine.en.inHours === "I'm sorry, I wasn't able to get that message through to the center just now. Please press 1 now to reach someone at the center, or tell me and I'll transfer you. If a child is in danger, hang up and call 9 1 1.");
 check("D5 EN alert-failed after-hours unchanged", sc.alertFailedLine.en.afterHours === "I'm sorry, I wasn't able to get that message through just now. Please press 1 now to try the center line. If a child is in danger, hang up and call 9 1 1.");
 check("D5 EN injury script starts as signed", sc.afterHoursSafetyInjury.en.startsWith("I'm sorry to hear that. Is anyone in danger, or does your child need emergency care right now? I can't give medical advice."));
+
+// ---------------------------------------------------------------------------------------------------------------
+// D5b (Security 2:57 PM CT 2026-10-06, item 3): looksSpanish may ONLY act on model free text. It must never replace
+// or suppress a fixed server safety line, and English with Hispanic names/places must never be replaced.
+// ---------------------------------------------------------------------------------------------------------------
+{ // (a) structure: guardEnglishOnly has exactly one call site, inside sayModel; no sendText carries model/caller text
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(join(__dirname, "../ws/handler.ts"), "utf8");
+  const calls = [...src.matchAll(/guardEnglishOnly\(/g)].length;
+  const sm = src.indexOf("const sayModel = (raw: string) => {");
+  const smEnd = src.indexOf("\n  };", sm);
+  const callAt = src.indexOf("guardEnglishOnly(g.text, session)");
+  check("D5b structure: guardEnglishOnly = 1 definition + exactly 1 call, and that call is inside sayModel (model free text only)", calls === 2 && sm > 0 && callAt > sm && callAt < smEnd, JSON.stringify({ calls, sm, callAt, smEnd }));
+  const sends = [...src.matchAll(/sendText\(([^;]*?)\);/g)].map((m) => m[1]);
+  const bad = sends.filter((a) => /out\.content|voicePrompt|raw\b|msg\./.test(a) && !/spokenForm\(a\.text\)/.test(a));
+  check(`D5b structure: none of the ${sends.length} direct sendText calls carries model or caller text (only sayModel's guarded output does)`, sends.length >= 8 && bad.length === 0, JSON.stringify(bad));
+}
+const FIXED_EN = () => [
+  sc.inHoursDangerLine.en, sc.alertFailedLine.en.inHours, sc.alertFailedLine.en.afterHours,
+  sc.personOfferLine.en.inHours, sc.personOfferLine.en.afterHours,
+  ...["danger", "abuse_neglect", "injury"].flatMap((k) => [sc.afterHoursSafetyLine(k, "en"), sc.afterHoursSafetyLineNoAlert(k, "en")]),
+  "Thank you for calling Handprints Academy. If a child is ever in danger, hang up and call 9 1 1.",
+];
+// (b) detector forced to call EVERYTHING Spanish (test seam, AMY_LLM_MOCK=1 only). Every fixed safety line must still be
+// sent byte-for-byte, while model free text in the same sessions is replaced.
+const asked = [];
+async function fixedLineRun(label, { afterHours, mode = "ok", mock, utter, want, detector }) {
+  edgeCalls.length = 0; logs.length = 0; edgeMode = mode; asked.length = 0;
+  globalThis.__amyLooksSpanishForTest = (t) => { asked.push(t); return detector(t); };
+  let round = 0;
+  globalThis.__amyMockLlm = (m) => mock(++round, m);
+  const { ws } = start({ afterHours });
+  await tick();
+  await say(ws, utter);
+  await tick(60);
+  const frames = ws.sent.filter((m) => m.type === "text").map((m) => m.token);
+  const fixedAsked = asked.filter((a) => FIXED_EN().includes(a));
+  check(`D5b fixed line untouched (${label}): sent byte-identical, never offered to the Spanish detector`, frames.includes(want) && fixedAsked.length === 0, JSON.stringify({ frames, fixedAsked }));
+  ws.emit("close");
+  globalThis.__amyLooksSpanishForTest = null; edgeMode = "ok";
+  return frames;
+}
+const ALL_SPANISH = () => true;
+const say1 = (content) => ({ content, tool_calls: null, usage: { input_tokens: 5, output_tokens: 5 } });
+for (const detector of [ALL_SPANISH, (t) => FIXED_EN().includes(t)]) {
+  const dn = detector === ALL_SPANISH ? "detector=always Spanish" : "detector=Spanish only for the fixed lines";
+  await fixedLineRun(`in-hours 911 line, ${dn}`, { afterHours: false, utter: "My son fell in the pool, he's not breathing", want: sc.inHoursDangerLine.en,
+    detector, mock: (r) => (r === 1 ? tool("take_message", { message: "child not breathing in pool", urgent: true, urgent_kind: "immediate_danger" }) : null) });
+  await fixedLineRun(`alert-failed in hours, ${dn}`, { afterHours: false, mode: "no_resend", utter: "My child has a big cut on his head", want: sc.alertFailedLine.en.inHours,
+    detector, mock: (r) => (r === 1 ? tool("take_message", { message: "injury", urgent: true, urgent_kind: "injury" }) : null) });
+  await fixedLineRun(`alert-failed after hours, ${dn}`, { afterHours: true, mode: "resend_failed", utter: "I need someone to call me, it's urgent", want: sc.alertFailedLine.en.afterHours,
+    detector, mock: (r) => (r === 1 ? tool("take_message", { message: "urgent callback", urgent: true, urgent_kind: "staff_coworker" }) : null) });
+  for (const [k, mode] of [["danger", "ok"], ["abuse_neglect", "ok"], ["abuse_neglect", "no_resend"], ["injury", "ok"], ["injury", "no_resend"]]) {
+    const want = mode === "ok" ? sc.afterHoursSafetyLine(k, "en") : sc.afterHoursSafetyLineNoAlert(k, "en");
+    await fixedLineRun(`after-hours ${k} script (alert ${mode}), ${dn}`, { afterHours: true, mode, utter: "Something happened to my child at the center", want,
+      detector, mock: (r, m) => (lastIsTool(m, "play_after_hours_safety") ? null : tool("play_after_hours_safety", { kind: k })) });
+  }
+  await fixedLineRun(`end-call closing line, ${dn}`, { afterHours: false, utter: "That's all, bye", want: "Thank you for calling Handprints Academy. If a child is ever in danger, hang up and call 9 1 1.",
+    detector, mock: (r) => (r === 1 ? tool("end_call", { summary: "caller done" }) : null) });
+}
+// offer-a-person (personOfferLine) is the alert-claim guard's REPLACEMENT for model text. Detector says the fixed line is
+// Spanish; the model's unconfirmed alert claim is replaced by personOfferLine, which must go out untouched.
+for (const afterHours of [false, true]) {
+  const want = afterHours ? sc.personOfferLine.en.afterHours : sc.personOfferLine.en.inHours;
+  await fixedLineRun(`offer-a-person line (${afterHours ? "after" : "in"} hours), detector=Spanish only for the fixed lines`, { afterHours, utter: "Can you tell the director?", want,
+    detector: (t) => FIXED_EN().includes(t), mock: () => say1("Okay, I've alerted the center director and our leadership team.") });
+}
+{ // same forced detector: MODEL free text IS replaced (the guard still works on the only path it is allowed on)
+  edgeCalls.length = 0; logs.length = 0;
+  globalThis.__amyLooksSpanishForTest = ALL_SPANISH;
+  globalThis.__amyMockLlm = () => say1("We're open 6:30 AM to 6:30 PM, Monday through Friday.");
+  const { ws } = start({ afterHours: false });
+  await tick(); await say(ws, "What are your hours?");
+  check("D5b forced detector: model free text replaced by the English-only line (guard active on model text)", texts(ws) === sc.englishOnlyLine.inHours && logs.some((l) => l.startsWith("[amy-ws] english_only_guard")), texts(ws));
+  ws.emit("close"); globalThis.__amyLooksSpanishForTest = null;
+}
+// (c) false positives: English with Hispanic names / places — real detector, end to end and unit
+const FP = [
+  ["My daughter Sofía Hernández fell", "I'm so sorry Sofía Hernández fell. Is she hurt, or is anyone in danger right now?"],
+  ["José is my son", "Thanks! So José is your son. How old is he?"],
+  ["We live in San Antonio", "Got it, you live in San Antonio. Which center are you interested in?"],
+  ["Her teacher is Ms. García", "Thank you. I'll note that her teacher is Ms. García."],
+  ["Her teacher is Ms. García de la Cruz", "Thank you. I'll note that her teacher is Ms. García de la Cruz."],
+  ["My son Juan Carlos de la Garza is three", "Great, Juan Carlos de la Garza, age three. Is this the best number to reach you?"],
+  ["We moved from Las Cruces to El Paso", "Welcome! You moved from Las Cruces to El Paso. How can I help today?"],
+  ["Her name is Lucía de la Fuente Del Río", "Thank you. That's Lucía de la Fuente Del Río. What is the best number to reach you?"],
+  ["We live on Calle de la Luna in Los Lobos", "Thanks. You live on Calle de la Luna in Los Lobos. When would you like to start?"],
+  ["Mrs. Ramírez said Mateo has a fever", "I'm sorry Mateo isn't feeling well. Mrs. Ramírez can tell you more, or I can have the director call you back."],
+  ["Is Ms. Del Toro there? My kids are Ana and Luis", "I can't check who is in the building, but I can connect you with someone at the center. Press 1 at any time."],
+  ["Hi, this is Guadalupe. My son is Jesús and he is four", "Hi Guadalupe! Jesús is four. Would you like to schedule a tour?"],
+  // D5c (Security 3:08 PM, R3): must-not-trip English read-backs, verbatim from the verdict (4 required + Security's battery)
+  ["Juan de la Cruz del Río", "Is that Juan de la Cruz del Río?"],
+  ["Luis de los Santos, 123 Calle del Sol, Mesquite", "Luis de los Santos, 123 Calle del Sol, Mesquite"],
+  ["We might move. Los Fresnos, La Porte or Del Rio", "Los Fresnos, La Porte, or Del Rio?"],
+  ["María del Carmen de la Luz", "María del Carmen de la Luz?"],
+  ["It's Juan de la Cruz del Río", "Okay, Juan de la Cruz del Río."],
+  ["Luis de los Santos, 123 Calle del Sol, Mesquite", "Got it: Luis de los Santos, 123 Calle del Sol, Mesquite."],
+  ["Los Fresnos, La Porte or Del Rio", "Okay — Los Fresnos, La Porte, or Del Rio?"],
+  ["My name is María del Carmen de la Luz", "Your name is María del Carmen de la Luz?"],
+  ["My daughter Sofía Hernández fell at Mesquite", "I'm sorry Sofía Hernández fell at Mesquite. Is she hurt?"],
+];
+for (const [utter, reply] of FP) {
+  check(`D5b no false positive (unit): caller "${utter}" and reply not Spanish`, !sc.looksSpanish(utter) && !sc.looksSpanish(reply) && !h.guardEnglishOnly(reply, { afterHours: false }).blocked);
+  edgeCalls.length = 0; logs.length = 0;
+  globalThis.__amyMockLlm = () => say1(reply);
+  const { ws } = start({ afterHours: false });
+  await tick(); await say(ws, utter);
+  check(`D5b no false positive (session): "${utter}" → reply sent unchanged, no english_only_guard`, texts(ws) === h.spokenForm(reply) && !logs.some((l) => l.startsWith("[amy-ws] english_only_guard")), texts(ws));
+  ws.emit("close");
+}
+// (d) still catches Spanish model replies after tuning (plus every ES constant, checked above)
+for (const es of [
+  "Lo siento, no puedo ayudarle con eso.", "Claro, ¿cuántos años tiene su hijo?", "Gracias por llamar a nuestro centro.",
+  "El centro está cerrado ahora, pero puedo tomar un mensaje para la directora.", "Mi hija se cayó en el patio y está llorando mucho",
+  "Buenos días, con mucho gusto le ayudo con la inscripción de su hija.",
+]) check(`D5b still detects Spanish: "${es.slice(0, 40)}…"`, sc.looksSpanish(es) && h.guardEnglishOnly(es, { afterHours: false }).blocked);
+// (e) D5c: the 15 Spanish lines from Security's battery (d5_looksSpanish_fix_option_A_check.mts) must ALL still flag
+{
+  const ES15 = [];
+  for (const k of ["danger", "abuse_neglect", "injury"]) ES15.push(sc.afterHoursSafetyLine(k, "es"), sc.afterHoursSafetyLineNoAlert(k, "es"));
+  ES15.push(sc.inHoursDangerLine.es, sc.alertFailedLine.es.inHours, sc.alertFailedLine.es.afterHours, sc.personOfferLine.es.inHours, sc.personOfferLine.es.afterHours,
+    "Claro, con gusto le ayudo. El horario del centro es de lunes a viernes.", "Gracias por llamar. Su hijo puede visitar el centro esta semana.",
+    "Sí, tenemos espacio para niños de dos años.", "Lo siento, no entiendo. Puede repetir por favor");
+  const missed = ES15.filter((t) => !sc.looksSpanish(t));
+  check(`D5c all 15 Spanish lines (Security battery) still flag: ${ES15.length - missed.length}/${ES15.length}`, ES15.length === 15 && missed.length === 0, JSON.stringify(missed));
+  // the particles are gone from the marker list (structure check on the built constants source)
+  const csrc = readFileSync(join(D, "safety/constants.js"), "utf8");
+  const set = csrc.match(/SPANISH_MARKERS\s*=\s*new Set\(\[([\s\S]*?)\]\)/);
+  const words = set ? [...set[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  const bad = ["de", "del", "la", "las", "los", "el"].filter((w) => words.includes(w));
+  check(`D5c SPANISH_MARKERS (${words.length} words) contains none of de/del/la/las/los/el`, words.length > 50 && bad.length === 0, JSON.stringify(bad));
+}
+// (f) D5c final-reply case: the guard fires on Amy's LAST reply (end_call turn).
+const endWith = (content) => ({ content, tool_calls: [{ id: "tend" + Math.random().toString(36).slice(2, 6), name: "end_call", arguments: JSON.stringify({ summary: "caller done" }) }], usage: { input_tokens: 5, output_tokens: 5 } });
+const SPANISH_FINAL = "Gracias por llamar a nuestro centro. Que tenga un buen día.";
+{ // in hours: English-only line (press 1 now) is spoken and the call is NOT ended; press 1 then transfers
+  edgeCalls.length = 0; logs.length = 0;
+  globalThis.__amyMockLlm = () => endWith(SPANISH_FINAL);
+  const { ws } = start({ afterHours: false });
+  await tick(); await say(ws, "Thanks, that's all");
+  const t1 = texts(ws), e1 = endOf(ws);
+  check("D5c final reply in hours: Spanish end_call reply → English-only line (verbatim), and NO end frame (call kept open for press 1)", t1 === sc.englishOnlyLine.inHours && e1 === null && logs.some((l) => l.startsWith("[amy-ws] english_only_guard_keep_open")), JSON.stringify({ t1, e1 }));
+  ws.emit("message", JSON.stringify({ type: "dtmf", digit: "1" })); await tick();
+  const e2 = endOf(ws);
+  check("D5c final reply in hours: press 1 after the English-only line → transfer (reason transfer, via dtmf_1)", e2 && e2.reason === "transfer" && e2.via === "dtmf_1", JSON.stringify(e2));
+  ws.emit("close");
+}
+{ // in hours: caller keeps talking instead; Amy can still answer and end normally on an English reply
+  edgeCalls.length = 0; logs.length = 0; let n = 0;
+  globalThis.__amyMockLlm = () => (++n === 1 ? endWith(SPANISH_FINAL) : endWith("Thank you for calling. Goodbye!"));
+  const { ws } = start({ afterHours: false });
+  await tick(); await say(ws, "Thanks, that's all"); await say(ws, "Okay bye");
+  const e = endOf(ws);
+  check("D5c final reply in hours: session stays usable; next English end_call reply ends normally (end_call)", e && e.reason === "end_call" && texts(ws) === sc.englishOnlyLine.inHours + " Thank you for calling. Goodbye!", JSON.stringify({ e, t: texts(ws) }));
+  ws.emit("close");
+}
+{ // after hours: existing after-hours English-only line (no press 1), then the call ends normally
+  edgeCalls.length = 0; logs.length = 0;
+  globalThis.__amyMockLlm = () => endWith(SPANISH_FINAL);
+  const { ws } = start({ afterHours: true });
+  await tick(); await say(ws, "Thanks, that's all");
+  const t = texts(ws), e = endOf(ws);
+  check("D5c final reply after hours: after-hours English-only line (verbatim, no 'press 1'), then end (end_call)", t === sc.englishOnlyLine.afterHours && !/press 1/i.test(t) && e && e.reason === "end_call", JSON.stringify({ t, e }));
+  ws.emit("close");
+}
+{ // English final reply in hours: unchanged behavior (spoken, then end)
+  edgeCalls.length = 0; logs.length = 0;
+  globalThis.__amyMockLlm = () => endWith("Thank you for calling Handprints. Have a great day!");
+  const { ws } = start({ afterHours: false });
+  await tick(); await say(ws, "Thanks, that's all");
+  const e = endOf(ws);
+  check("D5c final reply in hours, English: spoken unchanged, then end (end_call) — no keep-open", texts(ws) === h.spokenForm("Thank you for calling Handprints. Have a great day!") && e && e.reason === "end_call" && !logs.some((l) => l.includes("keep_open")), JSON.stringify({ e, t: texts(ws) }));
+  ws.emit("close");
+}
+{ // no invented wording: every text frame in the four final-reply runs is the model text or an existing constant
+  check("D5c final-reply path adds no new wording (English-only lines are the existing D5 constants)", typeof sc.englishOnlyLine.inHours === "string" && /press 1 now/.test(sc.englishOnlyLine.inHours) && !/press 1/.test(sc.englishOnlyLine.afterHours));
+}
+globalThis.__amyMockLlm = null;
 
 // (4) GLOBAL outbound scan over EVERY session in this file: no ES constant and no Spanish text ever sent.
 {

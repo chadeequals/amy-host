@@ -45,9 +45,19 @@ export function isImmediateDangerMessage(name: string, rawArgs: string): boolean
   }
 }
 
-/** D5: replace a model reply that reads as Spanish with the fixed English-only line. */
+/** D5b test seam: under AMY_LLM_MOCK=1 ONLY, a test may swap the detector (e.g. "everything is Spanish") to prove
+ *  that fixed server safety lines never pass through this guard. Ignored in production (env unset). */
+function spanishDetector(): (t: string) => boolean {
+  const o = (globalThis as { __amyLooksSpanishForTest?: unknown }).__amyLooksSpanishForTest;
+  return process.env.AMY_LLM_MOCK === "1" && typeof o === "function" ? (o as (t: string) => boolean) : looksSpanish;
+}
+
+/** D5: replace a MODEL FREE-TEXT reply that reads as Spanish with the fixed English-only line.
+ *  D5b (Security 2:57 PM): called from exactly one place, sayModel (model-authored text). Fixed server lines
+ *  (911, alert-failed, after-hours C22/injury/danger, offer-a-person, time-limit, end lines) go out through
+ *  sendText directly and are never inspected, replaced or suppressed by this guard. */
 export function guardEnglishOnly(text: string, s: { afterHours: boolean }): { text: string; blocked: boolean } {
-  if (!looksSpanish(text)) return { text, blocked: false };
+  if (!spanishDetector()(text)) return { text, blocked: false };
   return { text: s.afterHours ? englishOnlyLine.afterHours : englishOnlyLine.inHours, blocked: true };
 }
 
@@ -303,10 +313,12 @@ async function replyLoop(
   isEnded: () => boolean,
 ): Promise<void> {
   /** G2: every model-authored line goes through the tuition filter. Fixed safety lines do not. */
+  let englishOnlyFired = false;
   const sayModel = (raw: string) => {
     const g = guardTuitionReply(raw, session.lang, ratesVerified);
     if (g.blocked) console.log("[amy-ws] tuition_guard", session.callSid, g.reason);
     const e = guardEnglishOnly(g.text, session);
+    englishOnlyFired = e.blocked;
     if (e.blocked) console.log("[amy-ws] english_only_guard", session.callSid);
     const a = guardAlertClaim(e.text, session);
     if (a.blocked) console.log("[amy-ws] alert_claim_guard", session.callSid, session.urgentAlertFailed ? "after_failure" : "unconfirmed");
@@ -361,8 +373,17 @@ async function replyLoop(
         }
         if (result.action === "end") {
           if (result.spoken) sendText(result.spoken, true);
-          else if (out.content) sayModel(out.content);
-          else sendText("Thank you for calling Handprints Academy. If a child is ever in danger, hang up and call 9 1 1.", true);
+          else if (out.content) {
+            const said = sayModel(out.content);
+            if (englishOnlyFired && !session.afterHours) {
+              // D5c (Security 3:08 PM): the in-hours English-only line says "press 1 now". Do NOT hang up on that
+              // turn: keep the session open so DTMF 1 → transferNow (G3) works. No new wording. After hours the
+              // English-only line has no press-1 offer, so the call ends normally below.
+              messages.push({ role: "assistant", content: said });
+              console.log("[amy-ws] english_only_guard_keep_open", session.callSid);
+              return;
+            }
+          } else sendText("Thank you for calling Handprints Academy. If a child is ever in danger, hang up and call 9 1 1.", true);
           sendEnd({ reason: result.spoken ? "safety_danger" : "end_call" });
           return;
         }

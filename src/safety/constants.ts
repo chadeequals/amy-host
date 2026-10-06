@@ -165,19 +165,22 @@ export const englishOnlyLine: { inHours: string; afterHours: string } = {
 };
 
 /** Common Spanish words that are not ordinary English words (lowercase). */
+// D5c (Security R3, 3:05 PM): the name/place particles de, del, la, las, los, el are deliberately NOT markers, so
+// English read-backs such as "Is that Juan de la Cruz del Río?" or "Los Fresnos, La Porte, or Del Rio?" never trip.
 const SPANISH_MARKERS: ReadonlySet<string> = new Set([
   "que", "qué", "para", "por", "usted", "ustedes", "gracias", "hola", "está", "están", "estoy", "estamos", "esta",
   "este", "esto", "señor", "señora", "niño", "niña", "niños", "hijo", "hija", "hijos", "llamar", "llamada", "llame",
   "puedo", "puede", "pueden", "quiero", "quiere", "necesito", "necesita", "ayudar", "ayudarle", "cuelgue", "marque",
   "favor", "muy", "pero", "cuando", "cuándo", "donde", "dónde", "cómo", "también", "ahora", "mismo", "nuestro",
   "nuestra", "nuestros", "horario", "inscripción", "inscribir", "visita", "buenos", "buenas", "días", "tardes",
-  "noches", "los", "las", "del", "una", "unos", "unas", "con", "soy", "sí", "mis", "tengo", "tiene", "hablar",
-  "español", "centro", "maestra", "maestro", "escuela", "guardería", "cuánto", "cuesta", "semana", "el", "la", "es",
-  "lo", "le", "les", "se", "su", "sus", "de", "en", "al", "pregunta", "preguntas", "llamarle", "directora",
+  "noches", "una", "unos", "unas", "con", "soy", "sí", "mis", "tengo", "tiene", "hablar",
+  "español", "centro", "maestra", "maestro", "escuela", "guardería", "cuánto", "cuesta", "semana", "es",
+  "lo", "le", "les", "se", "su", "sus", "en", "al", "pregunta", "preguntas", "llamarle", "directora",
 ]);
 
-/** D5: does this model reply read as Spanish? (¿/¡, or ≥3 Spanish marker words making up ≥30% of the words.)
- *  A Spanish name alone (e.g. "José") never trips it. */
+/** D5: does this MODEL FREE-TEXT reply read as Spanish? (¿/¡, or ≥3 Spanish marker words making up ≥30% of the words.)
+ *  A Spanish name alone (e.g. "José") never trips it; name particles are not markers (D5c). Only handler.ts sayModel
+ *  calls this; fixed server safety lines never pass through it. */
 export function looksSpanish(text: string): boolean {
   if (/[¿¡]/.test(text)) return true;
   const words = (text.toLowerCase().match(/[a-zñáéíóúü]+/g) || []);
