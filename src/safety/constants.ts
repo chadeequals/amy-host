@@ -79,3 +79,67 @@ export function alertKindForSafety(kind: AfterHoursSafetyKind): string {
   if (kind === "injury") return "injury";
   return "abuse_neglect";
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// H1 / H2 (Security re-review 2026-10-06). Fixed server-played lines for the alert-FAILED and in-hours danger paths.
+// The alert-failed variants are the Curriculum C22 scripts with ONLY the "I'm sending an urgent alert …" sentence(s)
+// swapped for a truthful press-1 offer. ⚠ New spoken wording on a C22 path: needs Curriculum + Security sign-off.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** H2: in-hours immediate danger. Server speaks this BEFORE firing take_message urgent immediate_danger. */
+export const inHoursDangerLine: Record<SafetyLang, string> = {
+  en: "This sounds like an emergency. Please hang up and call 9 1 1 now. If you stay on the line, press 1 to reach someone at the center.",
+  es: "Esto suena como una emergencia. Por favor cuelgue y marque el 9 1 1 ahora. Si se queda en la línea, marque el 1 para hablar con alguien del centro.",
+};
+
+/** H1: Edge urgent alert NOT confirmed (alert_sent!==true / alert_skipped / HTTP or network error). Never claims an alert. */
+export const alertFailedLine: Record<SafetyLang, { inHours: string; afterHours: string }> = {
+  en: {
+    inHours:
+      "I'm sorry, I wasn't able to get that message through to the center just now. Please press 1 now to reach someone at the center, or tell me and I'll transfer you. If a child is in danger, hang up and call 9 1 1.",
+    afterHours:
+      "I'm sorry, I wasn't able to get that message through just now. Please press 1 now to try the center line. If a child is in danger, hang up and call 9 1 1.",
+  },
+  es: {
+    inHours:
+      "Lo siento, no pude hacer llegar ese mensaje al centro en este momento. Por favor marque el 1 ahora para hablar con alguien del centro, o dígame y le transfiero. Si un niño o una niña está en peligro, cuelgue y marque el 9 1 1.",
+    afterHours:
+      "Lo siento, no pude hacer llegar ese mensaje en este momento. Por favor marque el 1 ahora para intentar comunicarse con el centro. Si un niño o una niña está en peligro, cuelgue y marque el 9 1 1.",
+  },
+};
+
+/** H1: replacement when a MODEL reply claims an alert that Edge has not confirmed. */
+export const personOfferLine: Record<SafetyLang, { inHours: string; afterHours: string }> = {
+  en: {
+    inHours: "I can connect you with someone at the center right now. Press 1 at any time, or tell me and I'll transfer you.",
+    afterHours: "You can press 1 at any time to try the center line. If a child is in danger, hang up and call 9 1 1.",
+  },
+  es: {
+    inHours: "Puedo comunicarle con alguien del centro ahora mismo. Marque el 1 en cualquier momento, o dígame y le transfiero.",
+    afterHours: "Puede marcar el 1 en cualquier momento para intentar comunicarse con el centro. Si un niño o una niña está en peligro, cuelgue y marque el 9 1 1.",
+  },
+};
+
+const ALERT_SENTENCE: Record<SafetyLang, string> = {
+  en: "I'm sending an urgent alert to the center director and our leadership team right now. Someone from leadership will follow up first thing when the center opens in the morning.",
+  es: "Estoy enviando ahora mismo una alerta urgente a la directora del centro y a nuestro equipo de liderazgo. Alguien del liderazgo le dará seguimiento a primera hora cuando el centro abra por la mañana.",
+};
+const NO_ALERT_SENTENCE: Record<SafetyLang, string> = {
+  en: "I wasn't able to send an alert to the center just now. Please press 1 now to try the center line.",
+  es: "No pude enviar una alerta al centro en este momento. Por favor marque el 1 ahora para intentar comunicarse con el centro.",
+};
+
+/** H1: C22 after-hours script when the urgent alert was NOT confirmed. Danger line has no alert claim (unchanged). */
+export function afterHoursSafetyLineNoAlert(kind: AfterHoursSafetyKind, lang: SafetyLang): string {
+  const base = afterHoursSafetyLine(kind, lang);
+  if (kind === "danger") return base;
+  if (!base.includes(ALERT_SENTENCE[lang])) {
+    // Fail safe: if Curriculum wording drifts, never speak an unconfirmed alert claim.
+    return alertFailedLine[lang].afterHours;
+  }
+  return base.replace(ALERT_SENTENCE[lang], NO_ALERT_SENTENCE[lang]);
+}
+
+/** H1: model-authored text that claims an alert (EN/ES). Fixed lines are not filtered. */
+export const ALERT_CLAIM_RE =
+  /(^|[^A-Za-zÀ-ÿ])(alert|alerts|alerting|alerted|alerta|alertas|alertar|alertando|alertado|alertada|alerté|alertaré|alertamos)(?![A-Za-zÀ-ÿ])/i;

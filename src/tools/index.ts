@@ -9,6 +9,8 @@ import type { ToolDef } from "../llm/openai.js";
 import { canCallTool, recordTool, type SessionCaps } from "../session/caps.js";
 import {
   afterHoursSafetyLine,
+  afterHoursSafetyLineNoAlert,
+  alertFailedLine,
   alertKindForSafety,
   type AfterHoursSafetyKind,
 } from "../safety/constants.js";
@@ -23,9 +25,37 @@ export type AmySession = {
   forwardTo: string | null;
   /** After-hours: no model-initiated live transfer; use fixed C22 safety scripts. (DTMF 1 still dials once.) */
   afterHours: boolean;
-  /** Serializes Edge writes that read-modify-write phone_call.enroll_answers (answers + cost). */
+  /** Serializes Edge writes that read-modify-write phone_call.enroll_answers (answers + cost + urgent record). */
   writeChain?: Promise<unknown>;
+  /** H1: true once Edge CONFIRMED an urgent alert on this call (alert_sent===true, no alert_skipped). */
+  urgentAlertOk?: boolean;
+  /** H1: true once an urgent alert attempt was NOT confirmed on this call (logged; caller offered press 1 / transfer). */
+  urgentAlertFailed?: boolean;
 };
+
+export type UrgentAlertOutcome = { ok: true } | { ok: false; reason: string };
+
+/**
+ * H1 (Security re-review 2026-10-06): an urgent alert counts as sent ONLY when Edge answered HTTP 2xx with
+ * alert_sent===true and no alert_skipped. alert_sent=false, any alert_skipped (no_resend / resend_failed /
+ * resend_error / amy_disabled / …), a missing field, or an HTTP/network error is a FAILURE.
+ */
+export function urgentAlertOutcome(
+  r: { ok: true; data: unknown } | { ok: false; error: string },
+): UrgentAlertOutcome {
+  if (!r.ok) return { ok: false, reason: r.error || "edge_error" };
+  const d = (r.data && typeof r.data === "object" ? r.data : {}) as Record<string, unknown>;
+  const skipped = typeof d.alert_skipped === "string" && d.alert_skipped ? d.alert_skipped : null;
+  if (d.alert_sent === true && !skipped) return { ok: true };
+  if (skipped) return { ok: false, reason: skipped.replace(/[^\w-]/g, "").slice(0, 32) || "alert_skipped" };
+  return { ok: false, reason: d.alert_sent === false ? "alert_not_sent" : "alert_status_missing" };
+}
+
+/** H1: one log line per failed urgent alert (CallSid + facility + tool + reason code only; no PII). */
+function logUrgentFailure(session: AmySession, tool: string, kind: string, reason: string): void {
+  session.urgentAlertFailed = true;
+  console.log("[amy-tool] urgent_alert_failed", session.callSid, "fac", session.facilityId, tool, kind, reason);
+}
 
 /** Phase 4: tour booking stays OFF on the test line (IVR parity: director books from the CRM card). */
 export function bookTourEnabled(): boolean {
@@ -308,14 +338,37 @@ export async function runTool(
     case "take_message": {
       const message = redactSensitive(String(args.message || "")).slice(0, 500);
       const urgent = Boolean(args.urgent);
+      const urgentKind = typeof args.urgent_kind === "string" ? args.urgent_kind : urgent ? "urgent" : undefined;
       const r = await serialWrite(session, () => callEdge("amy-call-summary", {
         facility_id,
         call_sid,
         summary: message,
         urgent,
         kind: "message",
-        urgent_kind: typeof args.urgent_kind === "string" ? args.urgent_kind : urgent ? "urgent" : undefined,
+        urgent_kind: urgentKind,
       }));
+      if (urgent) {
+        // H1: never let the model claim an alert Edge did not confirm. Failure → fixed press-1 / transfer offer.
+        const outcome = urgentAlertOutcome(r);
+        if (!outcome.ok) {
+          logUrgentFailure(session, "take_message", String(urgentKind || "urgent").slice(0, 24), outcome.reason);
+          return {
+            ok: false,
+            error: "urgent_alert_not_sent",
+            data: {
+              alert_sent: false,
+              reason: outcome.reason,
+              instruction:
+                "The alert was NOT sent. Do not say you sent or are sending an alert. Offer press 1" +
+                (session.afterHours ? "." : " or transfer_to_school_line."),
+            },
+            action: "safety_speak",
+            spoken: alertFailedLine[session.lang][session.afterHours ? "afterHours" : "inHours"],
+          };
+        }
+        session.urgentAlertOk = true;
+        return { ok: true, data: { ...(r.ok && r.data && typeof r.data === "object" ? r.data : {}), alert_sent: true } };
+      }
       if (!r.ok) return { ok: false, error: r.error };
       return { ok: true, data: r.data };
     }
@@ -326,28 +379,36 @@ export async function runTool(
       }
       const kind = parseSafetyKind(args.kind);
       if (!kind) return { ok: false, error: "bad_safety_kind" };
-      // Fixed Curriculum line — never model text.
-      const spoken = afterHoursSafetyLine(kind, session.lang);
       const urgentKind = alertKindForSafety(kind);
       const note =
         typeof args.optional_note === "string"
           ? redactSensitive(args.optional_note).slice(0, 500)
           : `after_hours_safety:${kind}`;
-      // Fire urgent alert via call-summary (Edge → Resend names-only). Fail closed logged there.
-      const r = await callEdge("amy-call-summary", {
+      // Fire urgent alert via call-summary (Edge writes the durable urgent record, then Resend names-only).
+      // Serialized with other enroll_answers writes (Edge read-modify-writes phone_call.enroll_answers).
+      const r = await serialWrite(session, () => callEdge("amy-call-summary", {
         facility_id,
         call_sid,
         summary: note,
         urgent: true,
         kind: "safety",
         urgent_kind: urgentKind,
-      });
+      }));
       console.log("[amy-tool] play_after_hours_safety", call_sid, "fac", facility_id, kind);
-      // Even if Edge alert skipped (Amy off / no recipients), still speak fixed line.
+      // H1: fixed Curriculum line. If the alert was NOT confirmed, the variant without the "I'm sending an urgent
+      // alert" sentence (press-1 offer instead) is spoken, and the failure is logged. Danger line has no alert claim.
+      const outcome = urgentAlertOutcome(r);
+      if (outcome.ok) session.urgentAlertOk = true;
+      else logUrgentFailure(session, "play_after_hours_safety", urgentKind, outcome.reason);
+      const spoken = outcome.ok ? afterHoursSafetyLine(kind, session.lang) : afterHoursSafetyLineNoAlert(kind, session.lang);
       const action = kind === "danger" ? "end" : "safety_speak";
       return {
         ok: true,
-        data: { kind, alert_ok: r.ok, alert: r.ok ? r.data : { error: r.error } },
+        data: {
+          kind,
+          alert_sent: outcome.ok,
+          ...(outcome.ok ? {} : { alert_failure: outcome.reason }),
+        },
         spoken,
         action,
       };

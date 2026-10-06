@@ -12,6 +12,11 @@
  *      handoffData MUST be a JSON string (Twilio rejects objects with 64107).
  *  G4  escalation phrase from SPOKEN_ESCALATION_TARGET only.
  *  G7  per-call cost estimate posted once on close (Edge amy-call-summary kind=cost_meta → phone_call.enroll_answers._amy_cost).
+ *  H1  (2026-10-06) model text claiming an alert is replaced by a press-1 / transfer offer unless Edge CONFIRMED an
+ *      urgent alert on this call (session.urgentAlertOk). Fixed safety lines are not filtered.
+ *  H2  (2026-10-06) in hours, take_message urgent_kind=immediate_danger → the server speaks the fixed 911 line
+ *      (inHoursDangerLine) BEFORE the Edge urgent write/alert runs, so the 911 instruction is never delayed by Edge
+ *      and the alert still fires if the caller hangs up to dial 911.
  */
 import type { WebSocket } from "ws";
 import type { RelayClaims } from "../auth/token.js";
@@ -24,6 +29,27 @@ import { quoteSheetForFacility } from "../facts/lockedSheet.js";
 import { guardTuitionReply } from "../safety/tuitionGuard.js";
 import { AMY_TEST_LINE_FACILITY_ID, isAllowedCalledNumber, SPOKEN_ESCALATION_TARGET } from "../config/guardrails.js";
 import { estimateCallCost } from "../cost/estimate.js";
+import { ALERT_CLAIM_RE, inHoursDangerLine, personOfferLine } from "../safety/constants.js";
+
+/** H2: does this take_message call carry urgent_kind=immediate_danger? (args are model JSON; parse defensively) */
+export function isImmediateDangerMessage(name: string, rawArgs: string): boolean {
+  if (name !== "take_message") return false;
+  try {
+    const a = JSON.parse(rawArgs || "{}") as Record<string, unknown>;
+    return String(a.urgent_kind || "").trim().toLowerCase() === "immediate_danger";
+  } catch {
+    return false;
+  }
+}
+
+/** H1: replace a model reply that claims an alert unless Edge confirmed one on this call. */
+export function guardAlertClaim(
+  text: string,
+  s: { lang: "en" | "es"; afterHours: boolean; urgentAlertOk?: boolean },
+): { text: string; blocked: boolean } {
+  if (s.urgentAlertOk || !ALERT_CLAIM_RE.test(text)) return { text, blocked: false };
+  return { text: personOfferLine[s.lang][s.afterHours ? "afterHours" : "inHours"], blocked: true };
+}
 
 type TwilioInbound =
   | { type: "setup"; callSid?: string; customParameters?: Record<string, string>; from?: string; to?: string }
@@ -257,9 +283,12 @@ async function replyLoop(
   const sayModel = (raw: string) => {
     const g = guardTuitionReply(raw, session.lang, ratesVerified);
     if (g.blocked) console.log("[amy-ws] tuition_guard", session.callSid, g.reason);
-    sendText(spokenForm(g.text), true);
-    return g.text;
+    const a = guardAlertClaim(g.text, session);
+    if (a.blocked) console.log("[amy-ws] alert_claim_guard", session.callSid, session.urgentAlertFailed ? "after_failure" : "unconfirmed");
+    sendText(spokenForm(a.text), true);
+    return a.text;
   };
+  let dangerLineSpoken = false;
 
   for (let round = 0; round < 4; round++) {
     if (isEnded()) return;
@@ -279,6 +308,12 @@ async function replyLoop(
         })),
       });
       for (const tc of out.tool_calls) {
+        if (!session.afterHours && !dangerLineSpoken && isImmediateDangerMessage(tc.name, tc.arguments)) {
+          // H2: fixed 911 line first (in hours); the urgent take_message below then records + alerts.
+          sendText(inHoursDangerLine[session.lang], true);
+          dangerLineSpoken = true;
+          console.log("[amy-ws] in_hours_danger_line", session.callSid);
+        }
         const result = await runTool(session, tc.name, tc.arguments);
         messages.push({
           role: "tool",
