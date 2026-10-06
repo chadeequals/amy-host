@@ -17,6 +17,9 @@
  *  H2  (2026-10-06) in hours, take_message urgent_kind=immediate_danger → the server speaks the fixed 911 line
  *      (inHoursDangerLine) BEFORE the Edge urgent write/alert runs, so the 911 instruction is never delayed by Edge
  *      and the alert still fires if the caller hangs up to dial 911.
+ *  D5  (2026-10-06) ENGLISH ONLY: setup whose lang parameter is not exactly "en" is refused ("WS refused: lang_not_en");
+ *      session.lang is the literal "en" (never read from Twilio), so no ES safety constant can be emitted; model text
+ *      that reads as Spanish is replaced by the fixed englishOnlyLine (guardEnglishOnly).
  */
 import type { WebSocket } from "ws";
 import type { RelayClaims } from "../auth/token.js";
@@ -29,7 +32,7 @@ import { quoteSheetForFacility } from "../facts/lockedSheet.js";
 import { guardTuitionReply } from "../safety/tuitionGuard.js";
 import { AMY_TEST_LINE_FACILITY_ID, isAllowedCalledNumber, SPOKEN_ESCALATION_TARGET } from "../config/guardrails.js";
 import { estimateCallCost } from "../cost/estimate.js";
-import { ALERT_CLAIM_RE, inHoursDangerLine, personOfferLine } from "../safety/constants.js";
+import { ALERT_CLAIM_RE, englishOnlyLine, inHoursDangerLine, looksSpanish, personOfferLine } from "../safety/constants.js";
 
 /** H2: does this take_message call carry urgent_kind=immediate_danger? (args are model JSON; parse defensively) */
 export function isImmediateDangerMessage(name: string, rawArgs: string): boolean {
@@ -42,10 +45,16 @@ export function isImmediateDangerMessage(name: string, rawArgs: string): boolean
   }
 }
 
+/** D5: replace a model reply that reads as Spanish with the fixed English-only line. */
+export function guardEnglishOnly(text: string, s: { afterHours: boolean }): { text: string; blocked: boolean } {
+  if (!looksSpanish(text)) return { text, blocked: false };
+  return { text: s.afterHours ? englishOnlyLine.afterHours : englishOnlyLine.inHours, blocked: true };
+}
+
 /** H1: replace a model reply that claims an alert unless Edge confirmed one on this call. */
 export function guardAlertClaim(
   text: string,
-  s: { lang: "en" | "es"; afterHours: boolean; urgentAlertOk?: boolean },
+  s: { lang: "en"; afterHours: boolean; urgentAlertOk?: boolean },
 ): { text: string; blocked: boolean } {
   if (s.urgentAlertOk || !ALERT_CLAIM_RE.test(text)) return { text, blocked: false };
   return { text: personOfferLine[s.lang][s.afterHours ? "afterHours" : "inHours"], blocked: true };
@@ -179,8 +188,22 @@ export function handleAmySocket(
           refuse("not_test_line");
           return;
         }
-        const lang = (msg.customParameters?.lang === "es" ? "es" : "en") as "en" | "es";
-        session.lang = lang;
+        // D5: English only. Oracle always sends <Parameter name="lang" value="en|es"/> (Oracle amy.ts:181); anything
+        // other than exactly "en" (including missing) is refused. handoffData reason "error" is used because Oracle's
+        // amy-done FALLBACK_REASONS (amy-done-logic.ts:8-14) maps it to the IVR drop-back (amy-fallback) in the
+        // caller's language; an unknown reason would hit amy-done's goodbye + hangup instead.
+        const langParam = String(msg.customParameters?.lang ?? "").trim().toLowerCase();
+        if (langParam !== "en") {
+          console.log("[amy-ws] WS refused: lang_not_en", session.callSid);
+          sendEnd({ reason: "error", refused: "lang_not_en" });
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        // session.lang stays the literal "en" (D5) — never assigned from Twilio.
         const ah = (msg.customParameters?.afterHours || msg.customParameters?.after_hours || "").toLowerCase();
         session.afterHours = ah === "1" || ah === "true" || ah === "yes";
         // Do NOT log From.
@@ -283,7 +306,9 @@ async function replyLoop(
   const sayModel = (raw: string) => {
     const g = guardTuitionReply(raw, session.lang, ratesVerified);
     if (g.blocked) console.log("[amy-ws] tuition_guard", session.callSid, g.reason);
-    const a = guardAlertClaim(g.text, session);
+    const e = guardEnglishOnly(g.text, session);
+    if (e.blocked) console.log("[amy-ws] english_only_guard", session.callSid);
+    const a = guardAlertClaim(e.text, session);
     if (a.blocked) console.log("[amy-ws] alert_claim_guard", session.callSid, session.urgentAlertFailed ? "after_failure" : "unconfirmed");
     sendText(spokenForm(a.text), true);
     return a.text;

@@ -4,6 +4,7 @@
  * C22 after-hours safety: Curriculum-fixed lines via play_after_hours_safety tool (no improvisation).
  */
 import {
+  englishOnlyLine,
   TEXAS_ABUSE_HOTLINE_DISPLAY,
   TEXAS_ABUSE_HOTLINE_URL,
 } from "./safety/constants.js";
@@ -14,7 +15,8 @@ export { AMY_PROMPT_VERSION };
 export function buildSystemPrompt(args: {
   facilityId: number;
   centerName: string;
-  lang: "en" | "es";
+  /** D5: English only. */
+  lang: "en";
   factsDelimited: string;
   forwardLabel: string;
   afterHours: boolean;
@@ -53,7 +55,7 @@ export function buildSystemPrompt(args: {
     "16. Keep replies short (1–3 sentences) and ask one question at a time; this is a phone call.",
     "17. Distressed, crying, confused, or hard-to-understand caller: slow down, acknowledge, and offer a person right away (they can press 1). In hours use transfer_to_school_line; after hours use take_message (urgent=true if there is any safety concern). If you still cannot understand after two tries, offer the transfer (in hours) or take a message (after hours). NEVER end an upset or unresolved call with a bare thank-you/goodbye and never call end_call on it.",
     "18. Staff or coworker reports (an employee reporting a staff member, a child-safety concern, or a workplace problem), in any language: do not investigate or ask for details beyond a sentence or two; take_message with urgent=true and urgent_kind=staff_coworker, then in hours transfer_to_school_line. After hours, if it involves abuse/neglect, injury, or danger, use play_after_hours_safety (rule 4).",
-    "19. Language: reply in the caller's language (Spanish when the caller speaks Spanish or Language=es). Safety rules, tools, and the escalation phrase meaning are identical in Spanish.",
+    `19. Language: ENGLISH ONLY. Always reply in English, even if the caller speaks Spanish or another language. If the caller speaks another language or asks for Spanish, say exactly: "${args.afterHours ? englishOnlyLine.afterHours : englishOnlyLine.inHours}" Do not translate it and never speak Spanish or any other language. Safety first: if anything the caller says suggests danger, injury, or abuse, follow rule 4 in English (the server speaks the fixed English safety lines). (A server filter replaces any reply that is not in English.)`,
     "20. Alerts: never say you are sending, or have sent, an alert unless the take_message or play_after_hours_safety tool result shows alert_sent=true. If a tool result shows alert_sent=false or an error, do not mention alerts at all; offer press 1 (and in hours transfer_to_school_line). (A server filter replaces any unconfirmed alert claim.)",
     "",
     "FLOW: greet by name → listen → answer from FACT_SHEET_DATA (2–3 relevant points) → collect the rule-6 fields naturally, saving with upsert_own_lead → ask about a tour and preferred days/times (the director confirms the time; do not promise a specific slot) → confirm back only what the caller said → tell them the center director will call back (callback_window) → end_call.",

@@ -18,7 +18,8 @@ import {
 export type AmySession = {
   callSid: string;
   facilityId: number;
-  lang: "en" | "es";
+  /** D5 (2026-10-06): English only — literal "en" so no path can index an ES constant (constants.ts D5 note). */
+  lang: "en";
   caps: SessionCaps;
   /** School forward_to — set from setup custom params / facts; never from model. Informational only:
    *  the actual Dial target is chosen by Oracle amy-done from phone_line.forward_to. */

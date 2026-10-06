@@ -38,7 +38,8 @@ export const SCHOOL_LINE_E164 = "+19722856683";
 /** Guardrail 7: menu/prompt version stamped on every cost record. Bump on any prompt/greeting change. */
 // p6 (2026-10-06, Security H1/H2): in-hours immediate danger → server 911 line + take_message urgent immediate_danger;
 // no alert claim unless Edge confirms alert_sent (failure → press 1 / transfer offer).
-export const AMY_PROMPT_VERSION = "amy-cr-hp2-test-2026-10-06.p6";
+// p7 (2026-10-06, Security D5): English only — rule 19 says the fixed englishOnlyLine; lang≠en refused at setup.
+export const AMY_PROMPT_VERSION = "amy-cr-hp2-test-2026-10-06.p7";
 
 /** Guardrail 8: never creates/links a lead (enforced in Oracle store.ts linkCallToLead). Listed for tests. */
 export const LEAD_EXCLUDED_CALLERS_LAST10: ReadonlySet<string> = new Set(["2147046825"]);

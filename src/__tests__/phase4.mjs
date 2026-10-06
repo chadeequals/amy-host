@@ -120,7 +120,7 @@ const claims = (fac) => ({ callSid: "CA" + "a".repeat(32), facilityId: fac, exp:
 { // DTMF 1 after hours still transfers (IVR parity: dial once, Oracle stays-on-line on no answer)
   const ws = fakeWs();
   h.handleAmySocket(ws, claims(2));
-  ws.emit("message", JSON.stringify({ type: "setup", callSid: claims(2).callSid, to: "+14696891960", customParameters: { afterHours: "1" } }));
+  ws.emit("message", JSON.stringify({ type: "setup", callSid: claims(2).callSid, to: "+14696891960", customParameters: { lang: "en", afterHours: "1" } })); // D5: Oracle always sends lang (amy.ts:181); missing lang is now refused
   await tick();
   ws.emit("message", JSON.stringify({ type: "dtmf", digit: "1" }));
   await tick();

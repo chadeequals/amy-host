@@ -143,3 +143,45 @@ export function afterHoursSafetyLineNoAlert(kind: AfterHoursSafetyKind, lang: Sa
 /** H1: model-authored text that claims an alert (EN/ES). Fixed lines are not filtered. */
 export const ALERT_CLAIM_RE =
   /(^|[^A-Za-zÀ-ÿ])(alert|alerts|alerting|alerted|alerta|alertas|alertar|alertando|alertado|alertada|alerté|alertaré|alertamos)(?![A-Za-zÀ-ÿ])/i;
+
+// ---------------------------------------------------------------------------------------------------------------
+// D5 (Security ruling 2:42 PM CT 2026-10-06; Curriculum 2:34 PM): ENGLISH ONLY until a native Spanish read is signed.
+// The ES strings in this file are KEPT (for the later native sign-off, CF-7 / S5) but no code path can emit them:
+//  - AmySession.lang is the literal type "en" (tools/index.ts) and the handler never assigns it from Twilio;
+//  - the WS handler refuses any setup whose lang parameter is not exactly "en" (log: "WS refused: lang_not_en");
+//  - model text that reads as Spanish is replaced by englishOnlyLine before TTS (guardEnglishOnly, handler.ts).
+// ---------------------------------------------------------------------------------------------------------------
+
+/** D5: the only language Amy speaks. */
+export const SPOKEN_LANG = "en" as const;
+
+/** D5: said (verbatim) when the caller speaks Spanish / another language. Pressing 9 mid-Amy does nothing
+ *  (handler only acts on DTMF 1), so the caller is told to call back and press 9 at the IVR menu. */
+export const englishOnlyLine: { inHours: string; afterHours: string } = {
+  inHours:
+    "I'm sorry, I can only help in English right now. For Spanish, please call back and press 9 at the start of the call, or press 1 now to reach someone at the center.",
+  afterHours:
+    "I'm sorry, I can only help in English right now. For Spanish, please call back and press 9 at the start of the call, or call the center when it opens.",
+};
+
+/** Common Spanish words that are not ordinary English words (lowercase). */
+const SPANISH_MARKERS: ReadonlySet<string> = new Set([
+  "que", "qué", "para", "por", "usted", "ustedes", "gracias", "hola", "está", "están", "estoy", "estamos", "esta",
+  "este", "esto", "señor", "señora", "niño", "niña", "niños", "hijo", "hija", "hijos", "llamar", "llamada", "llame",
+  "puedo", "puede", "pueden", "quiero", "quiere", "necesito", "necesita", "ayudar", "ayudarle", "cuelgue", "marque",
+  "favor", "muy", "pero", "cuando", "cuándo", "donde", "dónde", "cómo", "también", "ahora", "mismo", "nuestro",
+  "nuestra", "nuestros", "horario", "inscripción", "inscribir", "visita", "buenos", "buenas", "días", "tardes",
+  "noches", "los", "las", "del", "una", "unos", "unas", "con", "soy", "sí", "mis", "tengo", "tiene", "hablar",
+  "español", "centro", "maestra", "maestro", "escuela", "guardería", "cuánto", "cuesta", "semana", "el", "la", "es",
+  "lo", "le", "les", "se", "su", "sus", "de", "en", "al", "pregunta", "preguntas", "llamarle", "directora",
+]);
+
+/** D5: does this model reply read as Spanish? (¿/¡, or ≥3 Spanish marker words making up ≥30% of the words.)
+ *  A Spanish name alone (e.g. "José") never trips it. */
+export function looksSpanish(text: string): boolean {
+  if (/[¿¡]/.test(text)) return true;
+  const words = (text.toLowerCase().match(/[a-zñáéíóúü]+/g) || []);
+  if (!words.length) return false;
+  const hits = words.filter((w) => SPANISH_MARKERS.has(w)).length;
+  return hits >= 3 && hits / words.length >= 0.3;
+}
